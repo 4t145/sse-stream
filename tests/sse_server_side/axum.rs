@@ -13,10 +13,10 @@ fn router() -> Router {
     Router::new().route("/", get(sse_handler))
 }
 
+pub const MESSAGE_TOTAL_COUNT: usize = 100000;
 async fn sse_handler() -> Sse<impl Stream<Item = Result<Event, io::Error>>> {
     tracing::info!("sse connection");
     let mut repeat_count = 0;
-    let repeat_limit = 100000;
     let stream = repeat_with(move || {
         repeat_count += 1;
         Ok(Event::default()
@@ -26,13 +26,14 @@ async fn sse_handler() -> Sse<impl Stream<Item = Result<Event, io::Error>>> {
             .retry(Duration::from_millis(1000))
             .data(format!("world-{repeat_count}")))
     })
-    .take(repeat_limit);
+    .take(MESSAGE_TOTAL_COUNT);
     Sse::new(stream)
 }
 
-pub async fn serve(addr: &str) -> io::Result<()> {
+pub async fn start_serve(addr: &str) -> io::Result<()> {
     let listener = tokio::net::TcpListener::bind(addr).await?;
 
     tracing::debug!("listening on {}", listener.local_addr()?);
-    axum::serve(listener, router()).await
+    tokio::spawn(async move { axum::serve(listener, router()).await });
+    Ok(())
 }

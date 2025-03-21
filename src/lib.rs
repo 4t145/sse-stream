@@ -1,3 +1,4 @@
+#![doc = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/README.md"))]
 use std::{
     collections::VecDeque,
     fmt::Display,
@@ -21,8 +22,6 @@ pin_project_lite::pin_project! {
     }
 }
 
-pub struct FrameData;
-
 impl<E, S, D> SseStream<StreamBody<MapOk<S, fn(D) -> Frame<D>>>>
 where
     S: Stream<Item = Result<D, E>>,
@@ -30,6 +29,9 @@ where
     D: Buf,
     StreamBody<MapOk<S, fn(D) -> Frame<D>>>: Body,
 {
+    /// Create a new [`SseStream`] from a stream of [`Bytes`](bytes::Bytes).
+    ///
+    /// This is useful when you interact with clients don't provide response body directly list reqwest.
     pub fn from_byte_stream(stream: S) -> Self {
         let stream = stream.map_ok(http_body::Frame::data as fn(D) -> Frame<D>);
         let body = StreamBody::new(stream);
@@ -43,6 +45,7 @@ where
 }
 
 impl<B: Body> SseStream<B> {
+    /// Create a new [`SseStream`] from a [`Body`].
     pub fn new(body: B) -> Self {
         Self {
             body: BodyDataStream::new(body),
@@ -59,6 +62,15 @@ pub struct Sse {
     pub data: Option<String>,
     pub id: Option<String>,
     pub retry: Option<u64>,
+}
+
+impl Sse {
+    pub fn is_event(&self) -> bool {
+        self.event.is_some()
+    }
+    pub fn is_message(&self) -> bool {
+        self.event.is_none()
+    }
 }
 
 pub enum Error<B: Body> {
@@ -167,6 +179,7 @@ impl<B: Body> Stream for SseStream<B> {
                     if line.last().copied() != Some(b'\n') {
                         break line.to_vec();
                     }
+                    // remove the trailing \n
                     let line = &line[..line.len() - 1];
                     if line.is_empty() {
                         if let Some(sse) = this.current.take() {

@@ -2,9 +2,20 @@
 name = "sse-stream"
 version = "0.1.0"
 edition = "2024"
+authors = ["4t145 <u4t145@163.com>"]
+license = "MIT/Apache-2.0"
+readme = "README.md"
+categories = [
+    "network-programming",
+    "asynchronous",
+]
+keywords = ["sse", "http", "http-client"]
+repository = "https://github.com/4t145/sse-stream/"
+description = "Convert a http body into sse stream."
+documentation = "https://docs.rs/sse-stream/sse-stream"
 
 [dependencies]
-bytes = "1.10.1"
+bytes = "1"
 futures-util = { version = "0.3" }
 http-body = "1"
 http-body-util = "0.1"
@@ -24,6 +35,8 @@ tracing-subscriber = { version = "0.3", features = [
 serde = { version  = "1", features = ["derive"]}
 axum = { version = "0.8", features = ["tracing"] }
 tracing = { version = "0.1" }
+hyper = { version = "1", features = ["client", "http1"] }
+hyper-util = { version = "0.1", features = ["tokio"] }
 [features]
 default = []
 tracing = ["dep:tracing"]
