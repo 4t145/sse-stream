@@ -1,4 +1,6 @@
 #![doc = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/README.md"))]
+
+// reference: https://html.spec.whatwg.org/multipage/server-sent-events.html
 use std::{
     collections::VecDeque,
     num::ParseIntError,
@@ -74,7 +76,7 @@ impl Sse {
 }
 
 pub enum Error {
-    Body(Box<dyn std::error::Error>),
+    Body(Box<dyn std::error::Error + Send + Sync>),
     InvalidLine,
     DuplicatedEventLine,
     DuplicatedIdLine,
@@ -136,7 +138,7 @@ impl std::error::Error for Error {
 
 impl<B: Body> Stream for SseStream<B>
 where
-    B::Error: std::error::Error + 'static,
+    B::Error: std::error::Error + Send + Sync + 'static,
 {
     type Item = Result<Sse, Error>;
 
@@ -186,7 +188,11 @@ where
                         return Poll::Ready(Some(Err(Error::InvalidLine)));
                     };
                     let field_name = &line[..comma_index];
-                    let field_value = &line[comma_index + 1..];
+                    let field_value = if line.len() > comma_index + 2 {
+                        &line[comma_index + 2..]
+                    } else {
+                        b""
+                    };
                     match field_name {
                         b"data" => {
                             let data_line =
