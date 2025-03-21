@@ -1,7 +1,6 @@
 #![doc = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/README.md"))]
 use std::{
     collections::VecDeque,
-    fmt::Display,
     num::ParseIntError,
     str::Utf8Error,
     task::{Context, Poll, ready},
@@ -22,12 +21,13 @@ pin_project_lite::pin_project! {
     }
 }
 
-impl<E, S, D> SseStream<StreamBody<MapOk<S, fn(D) -> Frame<D>>>>
+pub type ByteStreamBody<S, D> = StreamBody<MapOk<S, fn(D) -> Frame<D>>>;
+impl<E, S, D> SseStream<ByteStreamBody<S, D>>
 where
     S: Stream<Item = Result<D, E>>,
     E: std::error::Error,
     D: Buf,
-    StreamBody<MapOk<S, fn(D) -> Frame<D>>>: Body,
+    StreamBody<ByteStreamBody<S, D>>: Body,
 {
     /// Create a new [`SseStream`] from a stream of [`Bytes`](bytes::Bytes).
     ///
@@ -73,8 +73,8 @@ impl Sse {
     }
 }
 
-pub enum Error<B: Body> {
-    Body(B::Error),
+pub enum Error {
+    Body(Box<dyn std::error::Error>),
     InvalidLine,
     DuplicatedEventLine,
     DuplicatedIdLine,
@@ -83,10 +83,7 @@ pub enum Error<B: Body> {
     IntParse(ParseIntError),
 }
 
-impl<B: Body> std::fmt::Display for Error<B>
-where
-    B::Error: Display,
-{
+impl std::fmt::Display for Error {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Error::Body(e) => write!(f, "body error: {}", e),
@@ -100,10 +97,7 @@ where
     }
 }
 
-impl<B: Body> std::fmt::Debug for Error<B>
-where
-    B::Error: std::error::Error,
-{
+impl std::fmt::Debug for Error {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Error::Body(e) => write!(f, "Body({:?})", e),
@@ -117,10 +111,7 @@ where
     }
 }
 
-impl<B: Body> std::error::Error for Error<B>
-where
-    B::Error: std::error::Error + 'static,
-{
+impl std::error::Error for Error {
     fn description(&self) -> &str {
         match self {
             Error::Body(_) => "body error",
@@ -135,7 +126,7 @@ where
 
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
-            Error::Body(e) => Some(e),
+            Error::Body(e) => Some(e.as_ref()),
             Error::Utf8Parse(e) => Some(e),
             Error::IntParse(e) => Some(e),
             _ => None,
@@ -143,8 +134,11 @@ where
     }
 }
 
-impl<B: Body> Stream for SseStream<B> {
-    type Item = Result<Sse, Error<B>>;
+impl<B: Body> Stream for SseStream<B>
+where
+    B::Error: std::error::Error + 'static,
+{
+    type Item = Result<Sse, Error>;
 
     fn poll_next(
         mut self: std::pin::Pin<&mut Self>,
@@ -282,7 +276,7 @@ impl<B: Body> Stream for SseStream<B> {
                 };
                 self.poll_next(cx)
             }
-            Some(Err(e)) => Poll::Ready(Some(Err(Error::Body(e)))),
+            Some(Err(e)) => Poll::Ready(Some(Err(Error::Body(Box::new(e))))),
             None => {
                 if let Some(sse) = this.current.take() {
                     Poll::Ready(Some(Ok(sse)))
