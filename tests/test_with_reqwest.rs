@@ -29,5 +29,3 @@ async fn test_axum_with_reqwest() -> anyhow::Result<()> {
     assert_eq!(receive_count, sse_server_side::axum::MESSAGE_TOTAL_COUNT);
     Ok(())
 }
-
-

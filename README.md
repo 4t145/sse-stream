@@ -11,7 +11,7 @@ A SSE decoder for Http body
 # use sse_stream::SseStream;
 # use http_body_util::Full;
 # use bytes::Bytes;
-
+# use futures_util::StreamExt;
 const SSE_BODY: &str =
 r#"
 retry: 1000
@@ -22,11 +22,11 @@ data: Here's a system message of some kind that will get used
 data: to accomplish some task.
 "#;
 
-let bytes = include_bytes!("data/test_stream.sse");
-let body = Full::<Bytes>::from(bytes.to_vec());
-
+let body = Full::<Bytes>::from(SSE_BODY);
 let mut sse_body = SseStream::new(body);
-while let Some(sse) = sse_body.next().await {
-    println!("{:?}", sse.unwrap());
-}
+async {
+    while let Some(sse) = sse_body.next().await {
+        println!("{:?}", sse.unwrap());
+    }
+};
 ```

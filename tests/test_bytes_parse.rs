@@ -1,7 +1,6 @@
-
+use bytes::Bytes;
 use futures_util::StreamExt;
 use http_body_util::Full;
-use bytes::Bytes;
 
 #[tokio::test]
 async fn test_bytes_parse() {
