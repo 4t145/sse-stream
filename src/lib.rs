@@ -154,6 +154,7 @@ where
         match next_data {
             Some(Ok(data)) => {
                 let chunk = data.chunk();
+
                 if chunk.is_empty() {
                     return self.poll_next(cx);
                 }
@@ -172,11 +173,14 @@ where
                     let Some(line) = lines.next() else {
                         break Vec::new();
                     };
-                    if line.last().copied() != Some(b'\n') {
+                    let line = if line.ends_with(b"\r\n") {
+                        &line[..line.len() - 2]
+                    } else if line.ends_with(b"\n") || line.ends_with(b"\r") {
+                        &line[..line.len() - 1]
+                    } else {
                         break line.to_vec();
-                    }
-                    // remove the trailing \n
-                    let line = &line[..line.len() - 1];
+                    };
+
                     if line.is_empty() {
                         if let Some(sse) = this.current.take() {
                             this.parsed.push_back(sse);
@@ -185,6 +189,8 @@ where
                     }
                     // find comma
                     let Some(comma_index) = line.iter().position(|b| *b == b':') else {
+                        #[cfg(feature = "tracing")]
+                        tracing::warn!(?line, "invalid line, missing `:`");
                         return Poll::Ready(Some(Err(Error::InvalidLine)));
                     };
                     let field_name = &line[..comma_index];
@@ -275,7 +281,11 @@ where
                                 tracing::debug!(?comment, "sse comment line");
                             }
                         }
-                        _ => {
+                        _line => {
+                            #[cfg(feature = "tracing")]
+                            if tracing::enabled!(tracing::Level::WARN) {
+                                tracing::warn!(line = ?_line, "invalid line: unknown field");
+                            }
                             return Poll::Ready(Some(Err(Error::InvalidLine)));
                         }
                     }
