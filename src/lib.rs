@@ -194,8 +194,13 @@ where
                         return Poll::Ready(Some(Err(Error::InvalidLine)));
                     };
                     let field_name = &line[..comma_index];
-                    let field_value = if line.len() > comma_index + 2 {
-                        &line[comma_index + 2..]
+                    let field_value = if line.len() > comma_index + 1 {
+                        let field_value = &line[comma_index + 1..];
+                        if field_value.starts_with(b" ") {
+                            &field_value[1..]
+                        } else {
+                            field_value
+                        }
                     } else {
                         b""
                     };
