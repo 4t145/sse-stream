@@ -1,6 +1,6 @@
 
 retry: 1000
-event: userconnect
+event:userconnect
 data: {"username": "bobby", "time": "02:33:48"}
 
 data: Here's a system message of some kind that will get used
