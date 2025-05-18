@@ -1,6 +1,6 @@
 [package]
 name = "sse-stream"
-version = "0.1.4"
+version = "0.2.0"
 edition = "2024"
 authors = ["4t145 <u4t145@163.com>"]
 license = "MIT/Apache-2.0"
@@ -11,7 +11,7 @@ categories = [
 ]
 keywords = ["sse", "http", "http-client"]
 repository = "https://github.com/4t145/sse-stream/"
-description = "Convert a http body into sse stream."
+description = "Conversion between http body and sse stream"
 documentation = "https://docs.rs/sse-stream/sse-stream"
 
 [dependencies]

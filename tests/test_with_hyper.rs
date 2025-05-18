@@ -5,7 +5,6 @@ use sse_stream::SseStream;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 mod sse_server_side;
-
 #[tokio::test]
 async fn test_axum_with_reqwest() -> anyhow::Result<()> {
     tracing_subscriber::registry()
