@@ -2,12 +2,12 @@ use std::{
     collections::VecDeque,
     num::ParseIntError,
     str::Utf8Error,
-    task::{Context, Poll, ready},
+    task::{ready, Context, Poll},
 };
 
 use crate::Sse;
 use bytes::Buf;
-use futures_util::{Stream, TryStreamExt, stream::MapOk};
+use futures_util::{stream::MapOk, Stream, TryStreamExt};
 use http_body::{Body, Frame};
 use http_body_util::{BodyDataStream, StreamBody};
 
