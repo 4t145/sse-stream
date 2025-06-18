@@ -1,9 +1,9 @@
 use axum::{
-    Router,
     response::sse::{Event, Sse},
     routing::get,
+    Router,
 };
-use futures_util::{Stream, StreamExt, stream::repeat_with};
+use futures_util::{stream::repeat_with, Stream, StreamExt};
 
 use anyhow::Result;
 use std::time::Duration;

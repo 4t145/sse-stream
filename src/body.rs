@@ -1,15 +1,14 @@
 use std::{
     pin::Pin,
-    task::{Context, Poll, ready},
+    task::{ready, Context, Poll},
     time::Duration,
 };
 
+use crate::Sse;
 use bytes::Bytes;
 use futures_util::Stream;
 use http_body::{Body, Frame};
-
-use crate::Sse;
-
+use std::future::Future;
 pin_project_lite::pin_project! {
     pub struct SseBody<S, T = NeverTimer> {
         #[pin]
