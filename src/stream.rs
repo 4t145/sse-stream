@@ -11,6 +11,31 @@ use futures_util::{stream::MapOk, Stream, TryStreamExt};
 use http_body::{Body, Frame};
 use http_body_util::{BodyDataStream, StreamBody};
 
+#[derive(Debug)]
+enum BomHeaderState {
+    Parsing(Vec<u8>),
+    Consumed,
+}
+
+const BOM_HEADER: &[u8] = b"\xEF\xBB\xBF";
+
+// Try to consume the BOM header from the given bytes.
+// If the BOM header is found, return the remaining bytes, otherwise return the origin buffer.
+// Return `None` if we cannot determine whether the BOM header is present.
+fn try_consume_bom_header(buf: &[u8]) -> Option<&[u8]> {
+    if buf.len() < BOM_HEADER.len() {
+        if BOM_HEADER.starts_with(buf) {
+            None
+        } else {
+            Some(buf)
+        }
+    } else if buf.starts_with(BOM_HEADER) {
+        Some(&buf[BOM_HEADER.len()..])
+    } else {
+        Some(buf)
+    }
+}
+
 pin_project_lite::pin_project! {
     pub struct SseStream<B: Body> {
         #[pin]
@@ -18,6 +43,7 @@ pin_project_lite::pin_project! {
         parsed: VecDeque<Sse>,
         current: Option<Sse>,
         unfinished_line: Vec<u8>,
+        bom_header_state: BomHeaderState,
     }
 }
 
@@ -40,6 +66,7 @@ where
             parsed: VecDeque::new(),
             current: None,
             unfinished_line: Vec::new(),
+            bom_header_state: BomHeaderState::Parsing(Vec::new()),
         }
     }
 }
@@ -52,6 +79,7 @@ impl<B: Body> SseStream<B> {
             parsed: VecDeque::new(),
             current: None,
             unfinished_line: Vec::new(),
+            bom_header_state: BomHeaderState::Parsing(Vec::new()),
         }
     }
 }
@@ -134,7 +162,20 @@ where
         let next_data = ready!(this.body.poll_next(cx));
         match next_data {
             Some(Ok(data)) => {
-                let chunk = data.chunk();
+                let stripped_vec = if let BomHeaderState::Parsing(buf) = this.bom_header_state {
+                    buf.extend_from_slice(data.chunk());
+                    if let Some(stripped) = try_consume_bom_header(buf) {
+                        let stripped_vec = stripped.to_vec();
+                        *this.bom_header_state = BomHeaderState::Consumed;
+                        Some(stripped_vec)
+                    } else {
+                        return self.poll_next(cx);
+                    }
+                } else {
+                    None
+                };
+
+                let chunk = stripped_vec.as_deref().unwrap_or(data.chunk());
 
                 if chunk.is_empty() {
                     return self.poll_next(cx);
