@@ -20,7 +20,11 @@ async fn test_bom_header_at_start() {
     let body = Full::<Bytes>::from(sse_data.to_vec());
     let mut sse_body = sse_stream::SseStream::new(body);
 
-    let sse = sse_body.next().await.expect("Should have one SSE event").unwrap();
+    let sse = sse_body
+        .next()
+        .await
+        .expect("Should have one SSE event")
+        .unwrap();
     assert_eq!(sse.data, Some("hello".to_string()));
 }
 
@@ -33,12 +37,16 @@ async fn test_bom_split_across_chunks() {
         let stream = futures_util::stream::iter(
             [chunk1, chunk2]
                 .into_iter()
-                .map(|chunk| Ok::<_, std::convert::Infallible>(Frame::data(chunk)))
+                .map(|chunk| Ok::<_, std::convert::Infallible>(Frame::data(chunk))),
         );
         StreamBody::new(stream)
     };
     let mut sse_body = sse_stream::SseStream::new(body);
 
-    let sse = sse_body.next().await.expect("Should have one SSE event").unwrap();
+    let sse = sse_body
+        .next()
+        .await
+        .expect("Should have one SSE event")
+        .unwrap();
     assert_eq!(sse.data, Some("hello".to_string()));
 }
