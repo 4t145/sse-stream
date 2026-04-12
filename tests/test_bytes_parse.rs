@@ -30,10 +30,8 @@ async fn test_bom_header_at_start() {
 
 #[tokio::test]
 async fn test_bom_split_across_chunks() {
-    let chunk1 = Bytes::from(vec![0xEF]);
-    let chunk2 = Bytes::from(vec![
-        0xBB, 0xBF, b'd', b'a', b't', b'a', b':', b' ', b'h', b'e', b'l', b'l', b'o', b'\n', b'\n',
-    ]);
+    let chunk1 = Bytes::from_static(b"\xEF");
+    let chunk2 = Bytes::from_static(b"\xBB\xBFdata: hello\n\n");
 
     let body = {
         let stream = futures_util::stream::iter(
