@@ -1,5 +1,7 @@
 use std::{
     collections::VecDeque,
+    io::BufRead,
+    mem,
     num::ParseIntError,
     str::Utf8Error,
     task::{ready, Context, Poll},
@@ -36,13 +38,92 @@ fn try_consume_bom_header(buf: &[u8]) -> Option<&[u8]> {
     }
 }
 
+#[derive(Debug)]
+enum UnfinishedLineState {
+    // A `\r` was received before, so next `\n` should be ignored.
+    MayTrailingNewline,
+    // An unfinished line is found.
+    Unfinished(Vec<u8>),
+}
+
+struct SseLines {
+    buf: Vec<u8>,
+    pos: usize,
+    finished: bool,
+}
+
+impl SseLines {
+    pub fn next_line(&mut self) -> Option<&[u8]> {
+        let mut slice_iter = self.buf[self.pos..].iter().enumerate();
+        let new_line = loop {
+            if let Some((idx, &c)) = slice_iter.next() {
+                if c == b'\n' {
+                    break Some((idx, "\n"));
+                }
+                if c == b'\r' {
+                    if let Some((_, &next_c)) = slice_iter.next() {
+                        if next_c == b'\n' {
+                            break Some((idx, "\r\n"));
+                        }
+                    }
+                    break Some((idx, "\r"));
+                }
+            } else {
+                break None;
+            }
+        };
+        if let Some((idx, lb)) = new_line {
+            let pure_line = &self.buf[self.pos..self.pos + idx];
+            self.pos += idx + lb.len();
+            return Some(pure_line);
+        } else {
+            self.finished = true;
+            return None;
+        }
+    }
+
+    pub fn finish(self) -> UnfinishedLineState {
+        if self.finished {
+            if self.buf.last() == Some(&b'\r') {
+                return UnfinishedLineState::MayTrailingNewline;
+            } else {
+                return UnfinishedLineState::Unfinished(self.buf[self.pos..].to_vec());
+            }
+        } else {
+            panic!("SseLines::finish() called before all lines are parsed");
+        }
+    }
+}
+
+fn parse_lines_with_state(state: &mut UnfinishedLineState, buf: &[u8]) -> SseLines {
+    match state {
+        UnfinishedLineState::MayTrailingNewline => {
+            let buf_vec = buf.strip_prefix(b"\n").unwrap_or(buf).to_vec();
+            SseLines {
+                buf: buf_vec,
+                pos: 0,
+                finished: false,
+            }
+        }
+        UnfinishedLineState::Unfinished(line) => {
+            let mut remains = mem::take(line);
+            remains.extend_from_slice(buf);
+            SseLines {
+                buf: remains,
+                pos: 0,
+                finished: false,
+            }
+        }
+    }
+}
+
 pin_project_lite::pin_project! {
     pub struct SseStream<B: Body> {
         #[pin]
         body: BodyDataStream<B>,
         parsed: VecDeque<Sse>,
         current: Option<Sse>,
-        unfinished_line: Vec<u8>,
+        unfinished_line_state: UnfinishedLineState,
         bom_header_state: BomHeaderState,
     }
 }
@@ -65,7 +146,7 @@ where
             body: BodyDataStream::new(body),
             parsed: VecDeque::new(),
             current: None,
-            unfinished_line: Vec::new(),
+            unfinished_line_state: UnfinishedLineState::Unfinished(Vec::new()),
             bom_header_state: BomHeaderState::Parsing(Vec::new()),
         }
     }
@@ -78,7 +159,7 @@ impl<B: Body> SseStream<B> {
             body: BodyDataStream::new(body),
             parsed: VecDeque::new(),
             current: None,
-            unfinished_line: Vec::new(),
+            unfinished_line_state: UnfinishedLineState::Unfinished(Vec::new()),
             bom_header_state: BomHeaderState::Parsing(Vec::new()),
         }
     }
@@ -180,29 +261,8 @@ where
                 if chunk.is_empty() {
                     return self.poll_next(cx);
                 }
-                let mut lines = chunk.chunk_by(|maybe_nl, _| *maybe_nl != b'\n');
-                let first_line = lines.next().expect("frame is empty");
-                let mut new_unfinished_line = Vec::new();
-                let first_line = if !this.unfinished_line.is_empty() {
-                    this.unfinished_line.extend(first_line);
-                    std::mem::swap(&mut new_unfinished_line, this.unfinished_line);
-                    new_unfinished_line.as_ref()
-                } else {
-                    first_line
-                };
-                let mut lines = std::iter::once(first_line).chain(lines);
-                *this.unfinished_line = loop {
-                    let Some(line) = lines.next() else {
-                        break Vec::new();
-                    };
-                    let line = if line.ends_with(b"\r\n") {
-                        &line[..line.len() - 2]
-                    } else if line.ends_with(b"\n") || line.ends_with(b"\r") {
-                        &line[..line.len() - 1]
-                    } else {
-                        break line.to_vec();
-                    };
-
+                let mut line_iter = parse_lines_with_state(this.unfinished_line_state, chunk);
+                while let Some(line) = line_iter.next_line() {
                     if line.is_empty() {
                         if let Some(sse) = this.current.take() {
                             this.parsed.push_back(sse);
@@ -316,7 +376,9 @@ where
                             return Poll::Ready(Some(Err(Error::InvalidLine)));
                         }
                     }
-                };
+                }
+                let mut new_state = line_iter.finish();
+                mem::swap(this.unfinished_line_state, &mut new_state);
                 self.poll_next(cx)
             }
             Some(Err(e)) => Poll::Ready(Some(Err(Error::Body(Box::new(e))))),
