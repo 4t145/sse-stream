@@ -270,10 +270,13 @@ where
                         continue;
                     }
                     // find comma
-                    let Some(comma_index) = line.iter().position(|b| *b == b':') else {
+                    let comma_index=if let Some(comma_index) = line.iter().position(|b| *b == b':'){
+                        comma_index
+                    } else {
                         #[cfg(feature = "tracing")]
                         tracing::warn!(?line, "invalid line, missing `:`");
-                        return Poll::Ready(Some(Err(Error::InvalidLine)));
+                        // The line without comma will be regarded as the field name
+                        line.len()
                     };
                     let field_name = &line[..comma_index];
                     let field_value = if line.len() > comma_index + 1 {
@@ -312,11 +315,8 @@ where
                             let event_value =
                                 std::str::from_utf8(field_value).map_err(Error::Utf8Parse)?;
                             if let Some(Sse { event, .. }) = this.current.as_mut() {
-                                if event.is_some() {
-                                    return Poll::Ready(Some(Err(Error::DuplicatedEventLine)));
-                                } else {
-                                    event.replace(event_value.to_owned());
-                                }
+                                // If more than one line has same field name, later one will replace previous one
+                                event.replace(event_value.to_owned());
                             } else {
                                 this.current.replace(Sse {
                                     event: Some(event_value.to_owned()),
@@ -328,11 +328,8 @@ where
                             let id_value =
                                 std::str::from_utf8(field_value).map_err(Error::Utf8Parse)?;
                             if let Some(Sse { id, .. }) = this.current.as_mut() {
-                                if id.is_some() {
-                                    return Poll::Ready(Some(Err(Error::DuplicatedIdLine)));
-                                } else {
-                                    id.replace(id_value.to_owned());
-                                }
+                                // If more than one line has same field name, later one will replace previous one
+                                id.replace(id_value.to_owned());
                             } else {
                                 this.current.replace(Sse {
                                     id: Some(id_value.to_owned()),
@@ -344,19 +341,23 @@ where
                             let retry_value = std::str::from_utf8(field_value)
                                 .map_err(Error::Utf8Parse)?
                                 .trim_ascii();
-                            let retry_value =
-                                retry_value.parse::<u64>().map_err(Error::IntParse)?;
-                            if let Some(Sse { retry, .. }) = this.current.as_mut() {
-                                if retry.is_some() {
-                                    return Poll::Ready(Some(Err(Error::DuplicatedRetry)));
-                                } else {
+                            let retry_parse_res =
+                                retry_value.parse::<u64>().map_err(Error::IntParse);
+                            if let Ok(retry_value)=retry_parse_res{
+                                if let Some(Sse { retry, .. }) = this.current.as_mut() {
+                                    // If more than one line has same field name, later one will replace previous one
                                     retry.replace(retry_value);
+                                } else {
+                                    this.current.replace(Sse {
+                                        retry: Some(retry_value),
+                                        ..Default::default()
+                                    });
                                 }
-                            } else {
-                                this.current.replace(Sse {
-                                    retry: Some(retry_value),
-                                    ..Default::default()
-                                });
+                            }else{
+                                #[cfg(feature = "tracing")]
+                                if tracing::enabled!(tracing::Level::WARN) {
+                                    tracing::warn!(line = ?_line, "invalid retry: non-int field {}",retry_value);
+                                }
                             }
                         }
                         b"" => {
@@ -373,7 +374,7 @@ where
                             if tracing::enabled!(tracing::Level::WARN) {
                                 tracing::warn!(line = ?_line, "invalid line: unknown field");
                             }
-                            return Poll::Ready(Some(Err(Error::InvalidLine)));
+                            // Invalid line will be ignored.
                         }
                     }
                 }
@@ -383,11 +384,8 @@ where
             }
             Some(Err(e)) => Poll::Ready(Some(Err(Error::Body(Box::new(e))))),
             None => {
-                if let Some(sse) = this.current.take() {
-                    Poll::Ready(Some(Ok(sse)))
-                } else {
-                    Poll::Ready(None)
-                }
+                // When data stream terminated without empty line, we should discard last incomplate message.
+                Poll::Ready(None)
             }
         }
     }
