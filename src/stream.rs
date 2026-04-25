@@ -1,6 +1,5 @@
 use std::{
     collections::VecDeque,
-    io::BufRead,
     mem,
     num::ParseIntError,
     str::Utf8Error,
@@ -270,14 +269,15 @@ where
                         continue;
                     }
                     // find comma
-                    let comma_index=if let Some(comma_index) = line.iter().position(|b| *b == b':'){
-                        comma_index
-                    } else {
-                        #[cfg(feature = "tracing")]
-                        tracing::warn!(?line, "invalid line, missing `:`");
-                        // The line without comma will be regarded as the field name
-                        line.len()
-                    };
+                    let comma_index =
+                        if let Some(comma_index) = line.iter().position(|b| *b == b':') {
+                            comma_index
+                        } else {
+                            #[cfg(feature = "tracing")]
+                            tracing::warn!(?line, "invalid line, missing `:`");
+                            // The line without comma will be regarded as the field name
+                            line.len()
+                        };
                     let field_name = &line[..comma_index];
                     let field_value = if line.len() > comma_index + 1 {
                         let field_value = &line[comma_index + 1..];
@@ -343,7 +343,7 @@ where
                                 .trim_ascii();
                             let retry_parse_res =
                                 retry_value.parse::<u64>().map_err(Error::IntParse);
-                            if let Ok(retry_value)=retry_parse_res{
+                            if let Ok(retry_value) = retry_parse_res {
                                 if let Some(Sse { retry, .. }) = this.current.as_mut() {
                                     // If more than one line has same field name, later one will replace previous one
                                     retry.replace(retry_value);
@@ -353,10 +353,14 @@ where
                                         ..Default::default()
                                     });
                                 }
-                            }else{
+                            } else {
                                 #[cfg(feature = "tracing")]
                                 if tracing::enabled!(tracing::Level::WARN) {
-                                    tracing::warn!(line = ?_line, "invalid retry: non-int field {}",retry_value);
+                                    tracing::warn!(
+                                        ?line,
+                                        "invalid retry: non-int field {}",
+                                        retry_value
+                                    );
                                 }
                             }
                         }
