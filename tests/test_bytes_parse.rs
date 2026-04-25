@@ -4,19 +4,6 @@ use http_body::Frame;
 use http_body_util::{Full, StreamBody};
 use sse_stream::{Sse, SseStream};
 
-// =====================================================================
-// Bug exposure: `Buf::chunk()` only returns the *first contiguous* slice.
-//
-// `SseStream` reads each frame via `data.chunk()`. The `Buf` contract,
-// however, only requires `chunk()` to return *some* prefix of the
-// remaining bytes — not all of them. For multi-segment `Buf`
-// implementations (e.g. the result of `Bytes::chain`), this silently
-// drops every byte after the first segment.
-// =====================================================================
-
-/// A body that emits a single frame whose `Data` is a multi-segment
-/// `Buf` (`bytes::buf::Chain`). `chunk()` on such a value returns only
-/// the first segment, so any naive `data.chunk()` reader will lose data.
 struct ChainedFrameBody {
     sent: bool,
     first: &'static [u8],
