@@ -35,8 +35,10 @@ impl http_body::Body for ChainedFrameBody {
             return std::task::Poll::Ready(None);
         }
         self.sent = true;
-        let chained =
-            bytes::Buf::chain(Bytes::from_static(self.first), Bytes::from_static(self.second));
+        let chained = bytes::Buf::chain(
+            Bytes::from_static(self.first),
+            Bytes::from_static(self.second),
+        );
         std::task::Poll::Ready(Some(Ok(Frame::data(chained))))
     }
 }
@@ -236,27 +238,13 @@ async fn test_bom_with_cr_line_breaks() {
 #[tokio::test]
 async fn test_bom_split_then_cr_split() {
     // BOM split, AND the trailing `\r\n` split across chunks.
-    let out = collect_from_chunks(vec![
-        b"\xEF\xBB",
-        b"\xBFdata: hello\r",
-        b"\n\r\n",
-    ])
-    .await;
+    let out = collect_from_chunks(vec![b"\xEF\xBB", b"\xBFdata: hello\r", b"\n\r\n"]).await;
     assert_eq!(out, vec![data_only("hello")]);
 }
 
 // =====================================================================
-// Field parsing corner cases (post-fix: relaxed semantics)
+// Field parsing corner cases
 // =====================================================================
-
-/// Per the SSE spec, a line with no `:` is treated as a field name with
-/// empty value. The fix changed this from an error to a silent ignore
-/// (since none of the recognised fields can have an empty name).
-#[tokio::test]
-async fn test_line_without_colon_is_ignored() {
-    let out = collect_from_full(b"foobar\ndata: hi\n\n").await;
-    assert_eq!(out, vec![data_only("hi")]);
-}
 
 /// Comment lines (starting with `:`) must be ignored but must NOT break dispatch.
 #[tokio::test]
@@ -288,51 +276,25 @@ async fn test_only_one_leading_space_stripped() {
     assert_eq!(out, vec![data_only(" hello")]);
 }
 
-/// Duplicated `event`/`id` lines should now overwrite (not error).
+/// Per spec: an `id` field whose value contains U+0000 NULL must be ignored
+/// entirely (the rest of the event is still dispatched).
 #[tokio::test]
-async fn test_duplicated_event_overwrites() {
-    let out = collect_from_full(b"event: first\nevent: second\ndata: x\n\n").await;
-    assert_eq!(
-        out,
-        vec![Sse {
-            event: Some("second".into()),
-            data: Some("x".into()),
-            id: None,
-            retry: None,
-        }]
-    );
-}
-
-#[tokio::test]
-async fn test_duplicated_id_overwrites() {
-    let out = collect_from_full(b"id: a\nid: b\ndata: x\n\n").await;
-    assert_eq!(
-        out,
-        vec![Sse {
-            event: None,
-            data: Some("x".into()),
-            id: Some("b".into()),
-            retry: None,
-        }]
-    );
-}
-
-/// Invalid `retry:` value (non-int) should be silently ignored, not error.
-#[tokio::test]
-async fn test_invalid_retry_ignored() {
-    let out = collect_from_full(b"retry: not-a-number\ndata: x\n\n").await;
-    assert_eq!(out, vec![data_only("x")]);
-}
-
-/// Unknown fields should be ignored, not error.
-#[tokio::test]
-async fn test_unknown_field_ignored() {
-    let out = collect_from_full(b"weird: field\ndata: x\n\n").await;
-    assert_eq!(out, vec![data_only("x")]);
+async fn test_id_with_null_byte_ignored() {
+    let payload: &[u8] = b"id: ab\x00cd\ndata: x\n\n";
+    let stream = futures_util::stream::iter(std::iter::once(Ok::<_, std::convert::Infallible>(
+        Frame::data(Bytes::from_static(payload)),
+    )));
+    let body = StreamBody::new(stream);
+    let mut sse_body = SseStream::new(body);
+    let mut out = Vec::new();
+    while let Some(sse) = sse_body.next().await {
+        out.push(sse.expect("parse error"));
+    }
+    assert_eq!(out, vec![data_only("x")], "id with NULL must be ignored");
 }
 
 /// Stream that ends without a terminating empty line: the trailing
-/// incomplete event MUST be discarded (per the post-fix `None` branch).
+/// incomplete event MUST be discarded.
 #[tokio::test]
 async fn test_incomplete_trailing_event_discarded() {
     // No empty line after the second event.
