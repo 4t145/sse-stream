@@ -306,10 +306,8 @@ where
                                 }
                             } else {
                                 this.current.replace(Sse {
-                                    event: None,
                                     data: Some(data_line.to_owned()),
-                                    id: None,
-                                    retry: None,
+                                    ..Default::default()
                                 });
                             }
                         }
