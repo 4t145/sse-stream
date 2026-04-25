@@ -74,19 +74,19 @@ impl SseLines {
         if let Some((idx, lb)) = new_line {
             let pure_line = &self.buf[self.pos..self.pos + idx];
             self.pos += idx + lb.len();
-            return Some(pure_line);
+            Some(pure_line)
         } else {
             self.finished = true;
-            return None;
+            None
         }
     }
 
     pub fn finish(self) -> UnfinishedLineState {
         if self.finished {
             if self.buf.last() == Some(&b'\r') {
-                return UnfinishedLineState::MayTrailingNewline;
+                UnfinishedLineState::MayTrailingNewline
             } else {
-                return UnfinishedLineState::Unfinished(self.buf[self.pos..].to_vec());
+                UnfinishedLineState::Unfinished(self.buf[self.pos..].to_vec())
             }
         } else {
             panic!("SseLines::finish() called before all lines are parsed");
@@ -241,9 +241,11 @@ where
         }
         let next_data = ready!(this.body.poll_next(cx));
         match next_data {
-            Some(Ok(data)) => {
+            Some(Ok(mut data)) => {
+                // Buf might be incontinue structure, like `rope`, so we have to read all of it's remaining
+                let data_bytes = data.copy_to_bytes(data.remaining());
                 let stripped_vec = if let BomHeaderState::Parsing(buf) = this.bom_header_state {
-                    buf.extend_from_slice(data.chunk());
+                    buf.extend_from_slice(&data_bytes);
                     if let Some(stripped) = try_consume_bom_header(buf) {
                         let stripped_vec = stripped.to_vec();
                         *this.bom_header_state = BomHeaderState::Consumed;
@@ -255,7 +257,7 @@ where
                     None
                 };
 
-                let chunk = stripped_vec.as_deref().unwrap_or(data.chunk());
+                let chunk = stripped_vec.as_deref().unwrap_or(&data_bytes);
 
                 if chunk.is_empty() {
                     return self.poll_next(cx);

@@ -4,6 +4,70 @@ use http_body::Frame;
 use http_body_util::{Full, StreamBody};
 use sse_stream::{Sse, SseStream};
 
+// =====================================================================
+// Bug exposure: `Buf::chunk()` only returns the *first contiguous* slice.
+//
+// `SseStream` reads each frame via `data.chunk()`. The `Buf` contract,
+// however, only requires `chunk()` to return *some* prefix of the
+// remaining bytes — not all of them. For multi-segment `Buf`
+// implementations (e.g. the result of `Bytes::chain`), this silently
+// drops every byte after the first segment.
+// =====================================================================
+
+/// A body that emits a single frame whose `Data` is a multi-segment
+/// `Buf` (`bytes::buf::Chain`). `chunk()` on such a value returns only
+/// the first segment, so any naive `data.chunk()` reader will lose data.
+struct ChainedFrameBody {
+    sent: bool,
+    first: &'static [u8],
+    second: &'static [u8],
+}
+
+impl http_body::Body for ChainedFrameBody {
+    type Data = bytes::buf::Chain<Bytes, Bytes>;
+    type Error = std::convert::Infallible;
+
+    fn poll_frame(
+        mut self: std::pin::Pin<&mut Self>,
+        _: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Option<Result<Frame<Self::Data>, Self::Error>>> {
+        if self.sent {
+            return std::task::Poll::Ready(None);
+        }
+        self.sent = true;
+        let chained =
+            bytes::Buf::chain(Bytes::from_static(self.first), Bytes::from_static(self.second));
+        std::task::Poll::Ready(Some(Ok(Frame::data(chained))))
+    }
+}
+
+#[tokio::test]
+async fn test_multi_segment_buf_frame_not_truncated() {
+    // The full frame, once flattened, is a single complete SSE event.
+    // If `chunk()` is used naively, only the first segment ("data: hel")
+    // is read and the message is silently dropped at end-of-stream.
+    let body = ChainedFrameBody {
+        sent: false,
+        first: b"data: hel",
+        second: b"lo\n\n",
+    };
+    let mut sse_body = SseStream::new(body);
+    let mut out = Vec::new();
+    while let Some(sse) = sse_body.next().await {
+        out.push(sse.expect("parse error"));
+    }
+    assert_eq!(
+        out,
+        vec![Sse {
+            event: None,
+            data: Some("hello".into()),
+            id: None,
+            retry: None,
+        }],
+        "multi-segment Buf frame must be fully consumed"
+    );
+}
+
 async fn collect_from_full(data: &[u8]) -> Vec<Sse> {
     let body = Full::<Bytes>::from(data.to_vec());
     let mut sse_body = SseStream::new(body);
