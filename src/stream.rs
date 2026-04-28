@@ -279,6 +279,16 @@ where
                                 }
                             }
                             b"id" => {
+                                // Per spec: if the id field value contains U+0000 NULL,
+                                // the entire field MUST be ignored.
+                                if field_value.contains(&0u8) {
+                                    #[cfg(feature = "tracing")]
+                                    tracing::warn!(
+                                        ?line,
+                                        "id field contains NULL byte, ignoring per spec"
+                                    );
+                                    continue;
+                                }
                                 let id_value =
                                     std::str::from_utf8(field_value).map_err(Error::Utf8Parse)?;
                                 if let Some(Sse { id, .. }) = this.current.as_mut() {
