@@ -350,11 +350,8 @@ where
             }
             Some(Err(e)) => Poll::Ready(Some(Err(Error::Body(Box::new(e))))),
             None => {
-                if let Some(sse) = this.current.take() {
-                    Poll::Ready(Some(Ok(sse)))
-                } else {
-                    Poll::Ready(None)
-                }
+                // When data stream terminated without empty line, we should discard last incomplate message.
+                Poll::Ready(None)
             }
         }
     }
