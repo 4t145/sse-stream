@@ -13,28 +13,12 @@ use http_body_util::{BodyDataStream, StreamBody};
 
 #[derive(Debug)]
 enum BomHeaderState {
-    Parsing(Vec<u8>),
+    NotFoundYet,
+    Parsing,
     Consumed,
 }
 
 const BOM_HEADER: &[u8] = b"\xEF\xBB\xBF";
-
-// Try to consume the BOM header from the given bytes.
-// If the BOM header is found, return the remaining bytes, otherwise return the origin buffer.
-// Return `None` if we cannot determine whether the BOM header is present.
-fn try_consume_bom_header(buf: &[u8]) -> Option<&[u8]> {
-    if buf.len() < BOM_HEADER.len() {
-        if BOM_HEADER.starts_with(buf) {
-            None
-        } else {
-            Some(buf)
-        }
-    } else if buf.starts_with(BOM_HEADER) {
-        Some(&buf[BOM_HEADER.len()..])
-    } else {
-        Some(buf)
-    }
-}
 
 pin_project_lite::pin_project! {
     pub struct SseStream<B: Body> {
@@ -43,6 +27,7 @@ pin_project_lite::pin_project! {
         parsed: VecDeque<Sse>,
         current: Option<Sse>,
         unfinished_line: Vec<u8>,
+        mark_last_chunk_ending_with_cr: bool,
         bom_header_state: BomHeaderState,
     }
 }
@@ -66,7 +51,8 @@ where
             parsed: VecDeque::new(),
             current: None,
             unfinished_line: Vec::new(),
-            bom_header_state: BomHeaderState::Parsing(Vec::new()),
+            mark_last_chunk_ending_with_cr: false,
+            bom_header_state: BomHeaderState::NotFoundYet,
         }
     }
 }
@@ -79,7 +65,8 @@ impl<B: Body> SseStream<B> {
             parsed: VecDeque::new(),
             current: None,
             unfinished_line: Vec::new(),
-            bom_header_state: BomHeaderState::Parsing(Vec::new()),
+            mark_last_chunk_ending_with_cr: false,
+            bom_header_state: BomHeaderState::NotFoundYet,
         }
     }
 }
@@ -161,35 +148,70 @@ where
         }
         let next_data = ready!(this.body.poll_next(cx));
         match next_data {
-            Some(Ok(data)) => {
-                let stripped_vec = if let BomHeaderState::Parsing(buf) = this.bom_header_state {
-                    buf.extend_from_slice(data.chunk());
-                    if let Some(stripped) = try_consume_bom_header(buf) {
-                        let stripped_vec = stripped.to_vec();
-                        *this.bom_header_state = BomHeaderState::Consumed;
-                        Some(stripped_vec)
-                    } else {
-                        return self.poll_next(cx);
-                    }
+            Some(Ok(mut data)) => {
+                // check if buf is continuous
+                let chunk = data.chunk();
+                let remaining = data.remaining();
+                let mut copied_data = vec![];
+                let mut bytes = if chunk.len() < remaining {
+                    copied_data = vec![0; remaining];
+                    data.copy_to_slice(&mut copied_data);
+                    &copied_data
                 } else {
-                    None
+                    chunk
                 };
 
-                let chunk = stripped_vec.as_deref().unwrap_or(data.chunk());
+                if *this.mark_last_chunk_ending_with_cr {
+                    if !bytes.is_empty() && bytes[0] == b'\n' {
+                        bytes = &bytes[1..];
+                    }
+                    *this.mark_last_chunk_ending_with_cr = false;
+                }
 
-                if chunk.is_empty() {
+                if bytes.is_empty() {
                     return self.poll_next(cx);
                 }
-                let mut lines = chunk.chunk_by(|maybe_nl, _| *maybe_nl != b'\n');
+                if let BomHeaderState::NotFoundYet = this.bom_header_state {
+                    if bytes[0] == BOM_HEADER[0] {
+                        *this.bom_header_state = BomHeaderState::Parsing;
+                    }
+                }
+                // handling situation when the last line is end with `'\r'`. The next chunk may start with `'\n'`, but we should treat them as one line.
+                if bytes.last().is_some_and(|b| *b == b'\r') {
+                    *this.mark_last_chunk_ending_with_cr = true;
+                }
+                let mut lines = bytes.chunk_by(|line_end, line_start| {
+                    !(
+                        // for line ending with `\n`, it can be either `\n` or `\r\n`
+                        *line_end == b'\n' ||
+                        // for line ending with `\r`
+                        (*line_end == b'\r' && *line_start != b'\n')
+                    )
+                });
                 let first_line = lines.next().expect("frame is empty");
+
                 let mut new_unfinished_line = Vec::new();
-                let first_line = if !this.unfinished_line.is_empty() {
+                let mut first_line = if !this.unfinished_line.is_empty() {
                     this.unfinished_line.extend(first_line);
                     std::mem::swap(&mut new_unfinished_line, this.unfinished_line);
                     new_unfinished_line.as_ref()
                 } else {
                     first_line
                 };
+
+                if let BomHeaderState::Parsing = this.bom_header_state {
+                    if first_line.len() > BOM_HEADER.len() {
+                        if let Some(stripped) = first_line.strip_prefix(BOM_HEADER) {
+                            first_line = stripped
+                        }
+                        // we only check the BOM header only ONCE in the whole stream, it happens instantly when we receive the first line with enough length.
+                        *this.bom_header_state = BomHeaderState::Consumed;
+                    } else {
+                        this.unfinished_line.extend(first_line);
+                        return self.poll_next(cx);
+                    }
+                }
+
                 let mut lines = std::iter::once(first_line).chain(lines);
                 *this.unfinished_line = loop {
                     let Some(line) = lines.next() else {
