@@ -13,28 +13,12 @@ use http_body_util::{BodyDataStream, StreamBody};
 
 #[derive(Debug)]
 enum BomHeaderState {
-    Parsing(Vec<u8>),
+    NotFoundYet,
+    Parsing,
     Consumed,
 }
 
 const BOM_HEADER: &[u8] = b"\xEF\xBB\xBF";
-
-// Try to consume the BOM header from the given bytes.
-// If the BOM header is found, return the remaining bytes, otherwise return the origin buffer.
-// Return `None` if we cannot determine whether the BOM header is present.
-fn try_consume_bom_header(buf: &[u8]) -> Option<&[u8]> {
-    if buf.len() < BOM_HEADER.len() {
-        if BOM_HEADER.starts_with(buf) {
-            None
-        } else {
-            Some(buf)
-        }
-    } else if buf.starts_with(BOM_HEADER) {
-        Some(&buf[BOM_HEADER.len()..])
-    } else {
-        Some(buf)
-    }
-}
 
 pin_project_lite::pin_project! {
     pub struct SseStream<B: Body> {
@@ -43,6 +27,7 @@ pin_project_lite::pin_project! {
         parsed: VecDeque<Sse>,
         current: Option<Sse>,
         unfinished_line: Vec<u8>,
+        mark_last_chunk_ending_with_cr: bool,
         bom_header_state: BomHeaderState,
     }
 }
@@ -66,7 +51,8 @@ where
             parsed: VecDeque::new(),
             current: None,
             unfinished_line: Vec::new(),
-            bom_header_state: BomHeaderState::Parsing(Vec::new()),
+            mark_last_chunk_ending_with_cr: false,
+            bom_header_state: BomHeaderState::NotFoundYet,
         }
     }
 }
@@ -79,7 +65,8 @@ impl<B: Body> SseStream<B> {
             parsed: VecDeque::new(),
             current: None,
             unfinished_line: Vec::new(),
-            bom_header_state: BomHeaderState::Parsing(Vec::new()),
+            mark_last_chunk_ending_with_cr: false,
+            bom_header_state: BomHeaderState::NotFoundYet,
         }
     }
 }
@@ -161,171 +148,210 @@ where
         }
         let next_data = ready!(this.body.poll_next(cx));
         match next_data {
-            Some(Ok(data)) => {
-                let stripped_vec = if let BomHeaderState::Parsing(buf) = this.bom_header_state {
-                    buf.extend_from_slice(data.chunk());
-                    if let Some(stripped) = try_consume_bom_header(buf) {
-                        let stripped_vec = stripped.to_vec();
-                        *this.bom_header_state = BomHeaderState::Consumed;
-                        Some(stripped_vec)
-                    } else {
+            Some(Ok(mut data)) => {
+                loop {
+                    let mut bytes = data.chunk();
+                    let chunk_size = bytes.len();
+
+                    if *this.mark_last_chunk_ending_with_cr {
+                        if !bytes.is_empty() && bytes[0] == b'\n' {
+                            bytes = &bytes[1..];
+                        }
+                        *this.mark_last_chunk_ending_with_cr = false;
+                    }
+
+                    if bytes.is_empty() {
                         return self.poll_next(cx);
                     }
-                } else {
-                    None
-                };
-
-                let chunk = stripped_vec.as_deref().unwrap_or(data.chunk());
-
-                if chunk.is_empty() {
-                    return self.poll_next(cx);
-                }
-                let mut lines = chunk.chunk_by(|maybe_nl, _| *maybe_nl != b'\n');
-                let first_line = lines.next().expect("frame is empty");
-                let mut new_unfinished_line = Vec::new();
-                let first_line = if !this.unfinished_line.is_empty() {
-                    this.unfinished_line.extend(first_line);
-                    std::mem::swap(&mut new_unfinished_line, this.unfinished_line);
-                    new_unfinished_line.as_ref()
-                } else {
-                    first_line
-                };
-                let mut lines = std::iter::once(first_line).chain(lines);
-                *this.unfinished_line = loop {
-                    let Some(line) = lines.next() else {
-                        break Vec::new();
-                    };
-                    let line = if line.ends_with(b"\r\n") {
-                        &line[..line.len() - 2]
-                    } else if line.ends_with(b"\n") || line.ends_with(b"\r") {
-                        &line[..line.len() - 1]
-                    } else {
-                        break line.to_vec();
-                    };
-
-                    if line.is_empty() {
-                        if let Some(sse) = this.current.take() {
-                            this.parsed.push_back(sse);
+                    if let BomHeaderState::NotFoundYet = this.bom_header_state {
+                        if bytes[0] == BOM_HEADER[0] {
+                            *this.bom_header_state = BomHeaderState::Parsing;
                         }
-                        continue;
                     }
-                    // find comma
-                    let Some(comma_index) = line.iter().position(|b| *b == b':') else {
-                        #[cfg(feature = "tracing")]
-                        tracing::warn!(?line, "invalid line, missing `:`");
-                        return Poll::Ready(Some(Err(Error::InvalidLine)));
+                    // handling situation when the last line is end with `'\r'`. The next chunk may start with `'\n'`, but we should treat them as one line.
+                    if bytes.last().is_some_and(|b| *b == b'\r') {
+                        *this.mark_last_chunk_ending_with_cr = true;
+                    }
+                    let mut lines = bytes.chunk_by(|line_end, line_start| {
+                        !(
+                            // for line ending with `\n`, it can be either `\n` or `\r\n`
+                            *line_end == b'\n' ||
+                            // for line ending with `\r`
+                            (*line_end == b'\r' && *line_start != b'\n')
+                        )
+                    });
+                    let first_line = lines.next().expect("frame is empty");
+
+                    let mut new_unfinished_line = Vec::new();
+                    let mut first_line = if !this.unfinished_line.is_empty() {
+                        this.unfinished_line.extend(first_line);
+                        std::mem::swap(&mut new_unfinished_line, this.unfinished_line);
+                        new_unfinished_line.as_ref()
+                    } else {
+                        first_line
                     };
-                    let field_name = &line[..comma_index];
-                    let field_value = if line.len() > comma_index + 1 {
-                        let field_value = &line[comma_index + 1..];
-                        if field_value.starts_with(b" ") {
-                            &field_value[1..]
+
+                    if let BomHeaderState::Parsing = this.bom_header_state {
+                        if first_line.len() > BOM_HEADER.len() {
+                            if let Some(stripped) = first_line.strip_prefix(BOM_HEADER) {
+                                first_line = stripped
+                            }
+                            // we only check the BOM header only ONCE in the whole stream, it happens instantly when we receive the first line with enough length.
+                            *this.bom_header_state = BomHeaderState::Consumed;
                         } else {
-                            field_value
-                        }
-                    } else {
-                        b""
-                    };
-                    match field_name {
-                        b"data" => {
-                            let data_line =
-                                std::str::from_utf8(field_value).map_err(Error::Utf8Parse)?;
-                            // merge data lines
-                            if let Some(Sse { data, .. }) = this.current.as_mut() {
-                                if data.is_none() {
-                                    data.replace(data_line.to_owned());
-                                } else {
-                                    let data = data.as_mut().unwrap();
-                                    data.push('\n');
-                                    data.push_str(data_line);
-                                }
-                            } else {
-                                this.current.replace(Sse {
-                                    event: None,
-                                    data: Some(data_line.to_owned()),
-                                    id: None,
-                                    retry: None,
-                                });
-                            }
-                        }
-                        b"event" => {
-                            let event_value =
-                                std::str::from_utf8(field_value).map_err(Error::Utf8Parse)?;
-                            if let Some(Sse { event, .. }) = this.current.as_mut() {
-                                if event.is_some() {
-                                    return Poll::Ready(Some(Err(Error::DuplicatedEventLine)));
-                                } else {
-                                    event.replace(event_value.to_owned());
-                                }
-                            } else {
-                                this.current.replace(Sse {
-                                    event: Some(event_value.to_owned()),
-                                    ..Default::default()
-                                });
-                            }
-                        }
-                        b"id" => {
-                            let id_value =
-                                std::str::from_utf8(field_value).map_err(Error::Utf8Parse)?;
-                            if let Some(Sse { id, .. }) = this.current.as_mut() {
-                                if id.is_some() {
-                                    return Poll::Ready(Some(Err(Error::DuplicatedIdLine)));
-                                } else {
-                                    id.replace(id_value.to_owned());
-                                }
-                            } else {
-                                this.current.replace(Sse {
-                                    id: Some(id_value.to_owned()),
-                                    ..Default::default()
-                                });
-                            }
-                        }
-                        b"retry" => {
-                            let retry_value = std::str::from_utf8(field_value)
-                                .map_err(Error::Utf8Parse)?
-                                .trim_ascii();
-                            let retry_value =
-                                retry_value.parse::<u64>().map_err(Error::IntParse)?;
-                            if let Some(Sse { retry, .. }) = this.current.as_mut() {
-                                if retry.is_some() {
-                                    return Poll::Ready(Some(Err(Error::DuplicatedRetry)));
-                                } else {
-                                    retry.replace(retry_value);
-                                }
-                            } else {
-                                this.current.replace(Sse {
-                                    retry: Some(retry_value),
-                                    ..Default::default()
-                                });
-                            }
-                        }
-                        b"" => {
-                            #[cfg(feature = "tracing")]
-                            if tracing::enabled!(tracing::Level::DEBUG) {
-                                // a comment
-                                let comment =
-                                    std::str::from_utf8(field_value).map_err(Error::Utf8Parse)?;
-                                tracing::debug!(?comment, "sse comment line");
-                            }
-                        }
-                        _line => {
-                            #[cfg(feature = "tracing")]
-                            if tracing::enabled!(tracing::Level::WARN) {
-                                tracing::warn!(line = ?_line, "invalid line: unknown field");
-                            }
-                            return Poll::Ready(Some(Err(Error::InvalidLine)));
+                            this.unfinished_line.extend(first_line);
+                            return self.poll_next(cx);
                         }
                     }
-                };
+
+                    let mut lines = std::iter::once(first_line).chain(lines);
+                    *this.unfinished_line = loop {
+                        let Some(line) = lines.next() else {
+                            break Vec::new();
+                        };
+                        let line = if line.ends_with(b"\r\n") {
+                            &line[..line.len() - 2]
+                        } else if line.ends_with(b"\n") || line.ends_with(b"\r") {
+                            &line[..line.len() - 1]
+                        } else {
+                            break line.to_vec();
+                        };
+
+                        if line.is_empty() {
+                            if let Some(sse) = this.current.take() {
+                                this.parsed.push_back(sse);
+                            }
+                            continue;
+                        }
+                        // find comma
+                        let Some(comma_index) = line.iter().position(|b| *b == b':') else {
+                            #[cfg(feature = "tracing")]
+                            tracing::warn!(?line, "invalid line, missing `:`");
+                            return Poll::Ready(Some(Err(Error::InvalidLine)));
+                        };
+                        let field_name = &line[..comma_index];
+                        let field_value = if line.len() > comma_index + 1 {
+                            let field_value = &line[comma_index + 1..];
+                            if field_value.starts_with(b" ") {
+                                &field_value[1..]
+                            } else {
+                                field_value
+                            }
+                        } else {
+                            b""
+                        };
+                        match field_name {
+                            b"data" => {
+                                let data_line =
+                                    std::str::from_utf8(field_value).map_err(Error::Utf8Parse)?;
+                                // merge data lines
+                                if let Some(Sse { data, .. }) = this.current.as_mut() {
+                                    if data.is_none() {
+                                        data.replace(data_line.to_owned());
+                                    } else {
+                                        let data = data.as_mut().unwrap();
+                                        data.push('\n');
+                                        data.push_str(data_line);
+                                    }
+                                } else {
+                                    this.current.replace(Sse {
+                                        event: None,
+                                        data: Some(data_line.to_owned()),
+                                        id: None,
+                                        retry: None,
+                                    });
+                                }
+                            }
+                            b"event" => {
+                                let event_value =
+                                    std::str::from_utf8(field_value).map_err(Error::Utf8Parse)?;
+                                if let Some(Sse { event, .. }) = this.current.as_mut() {
+                                    if event.is_some() {
+                                        return Poll::Ready(Some(Err(Error::DuplicatedEventLine)));
+                                    } else {
+                                        event.replace(event_value.to_owned());
+                                    }
+                                } else {
+                                    this.current.replace(Sse {
+                                        event: Some(event_value.to_owned()),
+                                        ..Default::default()
+                                    });
+                                }
+                            }
+                            b"id" => {
+                                // Per spec: if the id field value contains U+0000 NULL,
+                                // the entire field MUST be ignored.
+                                if field_value.contains(&0u8) {
+                                    #[cfg(feature = "tracing")]
+                                    tracing::warn!(
+                                        ?line,
+                                        "id field contains NULL byte, ignoring per spec"
+                                    );
+                                    continue;
+                                }
+                                let id_value =
+                                    std::str::from_utf8(field_value).map_err(Error::Utf8Parse)?;
+                                if let Some(Sse { id, .. }) = this.current.as_mut() {
+                                    if id.is_some() {
+                                        return Poll::Ready(Some(Err(Error::DuplicatedIdLine)));
+                                    } else {
+                                        id.replace(id_value.to_owned());
+                                    }
+                                } else {
+                                    this.current.replace(Sse {
+                                        id: Some(id_value.to_owned()),
+                                        ..Default::default()
+                                    });
+                                }
+                            }
+                            b"retry" => {
+                                let retry_value = std::str::from_utf8(field_value)
+                                    .map_err(Error::Utf8Parse)?
+                                    .trim_ascii();
+                                let retry_value =
+                                    retry_value.parse::<u64>().map_err(Error::IntParse)?;
+                                if let Some(Sse { retry, .. }) = this.current.as_mut() {
+                                    if retry.is_some() {
+                                        return Poll::Ready(Some(Err(Error::DuplicatedRetry)));
+                                    } else {
+                                        retry.replace(retry_value);
+                                    }
+                                } else {
+                                    this.current.replace(Sse {
+                                        retry: Some(retry_value),
+                                        ..Default::default()
+                                    });
+                                }
+                            }
+                            b"" => {
+                                #[cfg(feature = "tracing")]
+                                if tracing::enabled!(tracing::Level::DEBUG) {
+                                    // a comment
+                                    let comment = std::str::from_utf8(field_value)
+                                        .map_err(Error::Utf8Parse)?;
+                                    tracing::debug!(?comment, "sse comment line");
+                                }
+                            }
+                            _line => {
+                                #[cfg(feature = "tracing")]
+                                if tracing::enabled!(tracing::Level::WARN) {
+                                    tracing::warn!(line = ?_line, "invalid line: unknown field");
+                                }
+                                return Poll::Ready(Some(Err(Error::InvalidLine)));
+                            }
+                        }
+                    };
+                    data.advance(chunk_size);
+                    if !data.has_remaining() {
+                        break;
+                    }
+                }
                 self.poll_next(cx)
             }
             Some(Err(e)) => Poll::Ready(Some(Err(Error::Body(Box::new(e))))),
             None => {
-                if let Some(sse) = this.current.take() {
-                    Poll::Ready(Some(Ok(sse)))
-                } else {
-                    Poll::Ready(None)
-                }
+                // When data stream terminated without empty line, we should discard last incomplate message.
+                Poll::Ready(None)
             }
         }
     }
