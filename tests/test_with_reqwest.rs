@@ -16,7 +16,7 @@ async fn test_axum_with_reqwest() -> anyhow::Result<()> {
     sse_server_side::axum::start_serve("127.0.0.1:8080").await?;
     let client = reqwest::Client::new();
     let response = client.get("http://127.0.0.1:8080/").send().await?;
-    let mut sse_body = SseStream::from_byte_stream(response.bytes_stream());
+    let mut sse_body = SseStream::from_bytes_stream(response.bytes_stream());
     let mut receive_count = 0;
     while let Some(Ok(sse)) = sse_body.next().await {
         assert!(sse.data.is_some());

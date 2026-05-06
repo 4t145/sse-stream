@@ -40,10 +40,16 @@ where
     D: Buf,
     StreamBody<ByteStreamBody<S, D>>: Body,
 {
+    /// Alias of [`from_bytes_stream`](Self::from_bytes_stream).
+    #[deprecated(since = "0.2.4", note = "It's a typo, use `from_bytes_stream` instead. This method will be removed in 0.3.0")]
+    pub fn from_byte_stream(stream: S) -> Self {
+        Self::from_bytes_stream(stream)
+    }
+    
     /// Create a new [`SseStream`] from a stream of [`Bytes`](bytes::Bytes).
     ///
-    /// This is useful when you interact with clients don't provide response body directly list reqwest.
-    pub fn from_byte_stream(stream: S) -> Self {
+    /// This is useful when you interact with clients don't provide response body directly like reqwest.
+    pub fn from_bytes_stream(stream: S) -> Self {
         let stream = stream.map_ok(http_body::Frame::data as fn(D) -> Frame<D>);
         let body = StreamBody::new(stream);
         Self {
