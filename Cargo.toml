@@ -9,7 +9,7 @@ categories = ["network-programming", "asynchronous"]
 keywords = ["sse", "http", "http-client"]
 repository = "https://github.com/4t145/sse-stream/"
 description = "Conversion between http body and sse stream"
-documentation = "https://docs.rs/sse-stream/sse-stream"
+documentation = "https://docs.rs/sse-stream"
 
 [dependencies]
 bytes = "1"

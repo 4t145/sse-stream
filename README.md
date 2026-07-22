@@ -2,7 +2,7 @@
 
 [![Crates.io Version](https://img.shields.io/crates/v/sse-stream)](https://crates.io/crates/sse-stream)
 ![Release status](https://github.com/4t145/sse-stream/actions/workflows/release.yml/badge.svg)
-[![docs.rs](https://img.shields.io/docsrs/sse-stream)](https://docs.rs/sse-stream/latest/sse-stream)
+[![docs.rs](https://img.shields.io/docsrs/sse-stream)](https://docs.rs/sse-stream/latest/sse_stream)
 
 
 A SSE decoder/encoder for Http body
