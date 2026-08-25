@@ -1,4 +1,4 @@
-use bytes::Bytes;
+use bytes::{Buf, Bytes};
 use futures_util::StreamExt;
 use http_body::Frame;
 use http_body_util::{Full, StreamBody};
@@ -55,6 +55,51 @@ async fn test_multi_segment_buf_frame_not_truncated() {
         }],
         "multi-segment Buf frame must be fully consumed"
     );
+}
+
+#[tokio::test]
+async fn test_event_split_across_many_immediately_ready_fragments() {
+    const SEGMENTS: usize = 10_000;
+    let mut fragments: Vec<&'static [u8]> = Vec::with_capacity(SEGMENTS + 2);
+    fragments.push(b"data: ");
+    fragments.extend((0..SEGMENTS).map(|_| b"x".as_slice()));
+    fragments.push(b"\n\n");
+
+    let events = collect_from_chunks(fragments).await;
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].data.as_deref().map(str::len), Some(SEGMENTS));
+}
+
+#[tokio::test]
+async fn test_bom_split_across_segments_of_one_frame() {
+    let data = Bytes::from_static(b"\xEF")
+        .chain(Bytes::from_static(b"\xBB"))
+        .chain(Bytes::from_static(b"\xBF"))
+        .chain(Bytes::from_static(b"data: hello\n\n"));
+    let mut events = SseStream::new(Full::new(data));
+
+    assert_eq!(events.next().await.unwrap().unwrap(), data_only("hello"),);
+    assert!(events.next().await.is_none());
+}
+
+#[tokio::test]
+async fn test_crlf_split_across_segments_of_one_frame() {
+    let data = Bytes::from_static(b"data: hello\r")
+        .chain(Bytes::from_static(b"\n"))
+        .chain(Bytes::from_static(b"data: world\n\n"));
+    let mut events = SseStream::new(Full::new(data));
+
+    assert_eq!(
+        events.next().await.unwrap().unwrap(),
+        data_only("hello\nworld"),
+    );
+    assert!(events.next().await.is_none());
+}
+
+#[tokio::test]
+async fn test_empty_frame_between_split_crlf() {
+    let out = collect_from_chunks(vec![b"data: hello\r", b"", b"\ndata: world\n\n"]).await;
+    assert_eq!(out, vec![data_only("hello\nworld")]);
 }
 
 async fn collect_from_full(data: &[u8]) -> Vec<Sse> {
