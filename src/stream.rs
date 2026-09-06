@@ -16,22 +16,26 @@ const BOM_HEADER: &[u8] = b"\xEF\xBB\xBF";
 struct ParserState {
     parsed: VecDeque<Sse>,
     current: Option<Sse>,
-    unfinished_line: Vec<u8>,
-    /// Raw payload bytes of the `data` fields of the event in `current`.
-    ///
-    /// The bytes of a `data` line are appended here as they arrive (fragmented
-    /// lines stream in directly, skipping `unfinished_line`) and are validated
-    /// as UTF-8 when the line completes, so the buffer may briefly hold
-    /// unvalidated bytes. A `'\n'` separator is appended after every data line
-    /// and removed when the event is dispatched.
+    /// Bytes of an incomplete line that must be parsed whole: anything not
+    /// yet known to be a `data` field value.
+    pending_line: Vec<u8>,
+    /// Payload bytes of the `data` fields of the event in `current`, with a
+    /// `'\n'` separator after each line that is dropped at dispatch. Validated
+    /// line by line; may briefly hold unvalidated bytes of a line in progress.
     data_buf: Vec<u8>,
-    /// State of a `data` line that is currently being streamed into `data_buf`
-    /// across chunks: the line's start index in `data_buf`, and whether the
-    /// single optional space after `data:` has yet to be consumed (the split
-    /// may fall between the colon and the value).
-    pending_data_line: Option<(usize, bool)>,
+    /// A `data` line currently being streamed into `data_buf` across chunks.
+    pending_data_line: Option<PendingDataLine>,
     skip_leading_lf: bool,
     first_line: bool,
+}
+
+/// A `data` line being streamed into `data_buf` across chunks.
+#[derive(Clone, Copy)]
+struct PendingDataLine {
+    /// Start index of the line's value bytes in `data_buf`.
+    line_start: usize,
+    /// Whether the optional single space after `data:` has been consumed yet.
+    strip_leading_space: bool,
 }
 
 impl Default for ParserState {
@@ -39,7 +43,7 @@ impl Default for ParserState {
         Self {
             parsed: VecDeque::new(),
             current: None,
-            unfinished_line: Vec::new(),
+            pending_line: Vec::new(),
             data_buf: Vec::new(),
             pending_data_line: None,
             skip_leading_lf: false,
@@ -167,19 +171,17 @@ impl ParserState {
         if line.is_empty() {
             if let Some(mut sse) = self.current.take() {
                 if !self.data_buf.is_empty() {
-                    // Drop the separator appended after the last data line.
+                    // Drop the separator of the last data line.
                     self.data_buf.pop();
                     let data_bytes = std::mem::take(&mut self.data_buf);
                     // SAFETY: `data_buf` only ever contains `data` field values
                     // joined by the ASCII separator b'\n', and every byte of
-                    // those values was validated by `str::from_utf8` — either
-                    // in the `data` branch of `parse_line` before being
-                    // appended, or in `finish_data_line` right after being
-                    // appended, where invalid bytes are truncated away. Hence
-                    // the buffer is valid UTF-8.
+                    // those values passed `str::from_utf8` — either in the
+                    // `data` branch of `parse_line` before being appended, or
+                    // in `finish_data_line` right after, where invalid bytes
+                    // are truncated away.
                     let data = unsafe { String::from_utf8_unchecked(data_bytes) };
-                    // Reuse the allocation for the next event: this leaves peak
-                    // memory where it was and avoids reallocating large payloads.
+                    // Keep the allocation for the next event.
                     self.data_buf = Vec::with_capacity(data.capacity());
                     sse.data = Some(data);
                 }
@@ -199,9 +201,7 @@ impl ParserState {
 
         match field_name {
             b"data" => {
-                // Validate the line now (error behavior unchanged), but defer
-                // building the `String` to dispatch time so the payload is not
-                // copied twice.
+                // Accumulate validated values; the `String` is built at dispatch.
                 let data_line = std::str::from_utf8(field_value).map_err(Error::Utf8Parse)?;
                 self.current.get_or_insert_default();
                 self.data_buf.extend_from_slice(data_line.as_bytes());
@@ -262,16 +262,15 @@ impl ParserState {
     }
 
     fn parse_complete_line(&mut self, line: &[u8]) -> Result<(), Error> {
-        // Fast path to avoid copy overhead if we don't have anything buffered.
-        if self.unfinished_line.is_empty() {
+        if self.pending_line.is_empty() {
             self.parse_line(line)
         } else {
-            let mut complete_line = std::mem::take(&mut self.unfinished_line);
+            let mut complete_line = std::mem::take(&mut self.pending_line);
             complete_line.extend_from_slice(line);
             let result = self.parse_line(&complete_line);
-            // Reuse the unfinished line buffer.
+            // Keep the allocation for the next fragmented line.
             complete_line.clear();
-            self.unfinished_line = complete_line;
+            self.pending_line = complete_line;
             result
         }
     }
@@ -284,20 +283,17 @@ impl ParserState {
             }
         }
 
-        // Resume a fragmented `data` line first, if any: its bytes stream
-        // straight into `data_buf` instead of being assembled in
-        // `unfinished_line` first and copied over at completion. A pending
-        // line can only exist across `parse_chunk` calls — the branch that
-        // starts one below always returns — so this is checked once here
-        // instead of in every loop iteration.
-        if let Some((line_start, strip_leading_space)) = self.pending_data_line {
-            if strip_leading_space {
-                // The single optional space after `data:` has not been
-                // consumed yet; whatever byte comes first decides.
+        // A pending data line resumes here. It can only be pending across
+        // chunks: the branch that starts one below always returns.
+        if let Some(mut pending) = self.pending_data_line {
+            if pending.strip_leading_space {
+                // Consume the optional single space if the chunk split fell
+                // between `data:` and its value.
+                pending.strip_leading_space = false;
+                self.pending_data_line = Some(pending);
                 if bytes.first() == Some(&b' ') {
                     bytes = &bytes[1..];
                 }
-                self.pending_data_line = Some((line_start, false));
             }
             match find_line_end(bytes) {
                 None => {
@@ -306,7 +302,7 @@ impl ParserState {
                 }
                 Some(line_end) => {
                     self.data_buf.extend_from_slice(&bytes[..line_end]);
-                    self.finish_data_line(line_start)?;
+                    self.finish_data_line(pending.line_start)?;
                     bytes = self.advance_past_delimiter(bytes, line_end);
                 }
             }
@@ -314,20 +310,20 @@ impl ParserState {
 
         while !bytes.is_empty() {
             let Some(line_end) = find_line_end(bytes) else {
-                // Incomplete line. If it is already known to be a `data` field
-                // line, its value streams into `data_buf` directly. This checks
-                // the literal prefix instead of searching for the colon: field
-                // detection needs the colon at the fixed position anyway.
-                if self.unfinished_line.is_empty() && bytes.starts_with(b"data:") {
+                // Incomplete line. A `data:` prefix means the value can stream
+                // into `data_buf`; anything else is buffered until the line
+                // completes.
+                if self.pending_line.is_empty() && bytes.starts_with(b"data:") {
                     let line_start = self.data_buf.len();
                     let value = bytes[5..].strip_prefix(b" ").unwrap_or(&bytes[5..]);
                     self.data_buf.extend_from_slice(value);
                     self.current.get_or_insert_default();
-                    // No value byte arrived yet if the fragment ends right
-                    // after the colon; the space decision stays pending.
-                    self.pending_data_line = Some((line_start, bytes.len() == 5));
+                    self.pending_data_line = Some(PendingDataLine {
+                        line_start,
+                        strip_leading_space: bytes.len() == 5, // ends right after `:`
+                    });
                 } else {
-                    self.unfinished_line.extend_from_slice(bytes);
+                    self.pending_line.extend_from_slice(bytes);
                 }
                 return Ok(());
             };
@@ -359,10 +355,9 @@ impl ParserState {
         }
     }
 
-    /// Validate the `data` line accumulated in `data_buf[line_start..]` in
-    /// place and terminate it with the `'\n'` separator. Invalid UTF-8 rolls
-    /// the partial line back, keeping the buffer's UTF-8 invariant, and is
-    /// reported like any other malformed line.
+    /// Validate the data line at `data_buf[line_start..]` in place and
+    /// terminate it with the `'\n'` separator. Invalid UTF-8 truncates the
+    /// partial line and is reported as a parse error.
     #[inline]
     fn finish_data_line(&mut self, line_start: usize) -> Result<(), Error> {
         self.pending_data_line = None;
@@ -377,11 +372,8 @@ impl ParserState {
 
 /// Find the index of the first `\n` or `\r` in `bytes`.
 ///
-/// With the `memchr` feature (enabled by default) this scans the first few bytes
-/// scalar and the rest with the SIMD-accelerated [`memchr2`](memchr::memchr2):
-/// for short lines the fixed overhead of the SIMD path (dispatch + vector setup)
-/// outweighs its win, while it pays off on long `data` lines.
-/// Without the feature it falls back to a purely scalar scan.
+/// The first few bytes are scanned scalar, the rest with
+/// [`memchr2`](memchr::memchr2): SIMD dispatch does not pay off on short lines.
 #[cfg(feature = "memchr")]
 #[inline]
 fn find_line_end(bytes: &[u8]) -> Option<usize> {
