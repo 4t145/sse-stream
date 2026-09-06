@@ -8,6 +8,13 @@
 A SSE decoder/encoder for Http body
 
 
+## Features
+
+| Feature | Default | Description |
+| --- | --- | --- |
+| `memchr` | ✓ | SIMD-accelerated line-end scanning via [`memchr`](https://crates.io/crates/memchr). Disable for a scalar fallback with one less dependency. |
+| `tracing` | | Log parser diagnostics (comments, malformed lines) via [`tracing`](https://crates.io/crates/tracing). |
+
 ## Decode
 ```rust
 # use sse_stream::SseStream;
