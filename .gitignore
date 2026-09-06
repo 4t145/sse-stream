@@ -1,2 +1,5 @@
 /target
 Cargo.lock
+
+# direnv cache (nix-direnv)
+.direnv/
