@@ -254,8 +254,7 @@ impl ParserState {
         }
 
         while !bytes.is_empty() {
-            let Some(line_end) = bytes.iter().position(|byte| matches!(*byte, b'\n' | b'\r'))
-            else {
+            let Some(line_end) = find_line_end(bytes) else {
                 self.unfinished_line.extend_from_slice(bytes);
                 return Ok(());
             };
@@ -275,6 +274,36 @@ impl ParserState {
 
         Ok(())
     }
+}
+
+/// Find the index of the first `\n` or `\r` in `bytes`.
+///
+/// With the `memchr` feature (enabled by default) this scans the first few bytes
+/// scalar and the rest with the SIMD-accelerated [`memchr2`](memchr::memchr2):
+/// for short lines the fixed overhead of the SIMD path (dispatch + vector setup)
+/// outweighs its win, while it pays off on long `data` lines.
+/// Without the feature it falls back to a purely scalar scan.
+#[cfg(feature = "memchr")]
+#[inline]
+fn find_line_end(bytes: &[u8]) -> Option<usize> {
+    /// How many leading bytes are scanned scalar before delegating to `memchr2`.
+    const SCALAR_HEAD: usize = 16;
+
+    let head_len = bytes.len().min(SCALAR_HEAD);
+    let head_hit = bytes[..head_len]
+        .iter()
+        .position(|byte| matches!(*byte, b'\n' | b'\r'));
+    if head_len == bytes.len() || head_hit.is_some() {
+        return head_hit;
+    }
+    memchr::memchr2(b'\n', b'\r', &bytes[head_len..]).map(|i| i + head_len)
+}
+
+/// Find the index of the first `\n` or `\r` in `bytes`.
+#[cfg(not(feature = "memchr"))]
+#[inline]
+fn find_line_end(bytes: &[u8]) -> Option<usize> {
+    bytes.iter().position(|byte| matches!(*byte, b'\n' | b'\r'))
 }
 
 impl<B: Body> Stream for SseStream<B>

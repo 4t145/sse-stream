@@ -17,6 +17,7 @@ futures-util = { version = "0.3" }
 http-body = "1"
 http-body-util = "0.1"
 pin-project-lite = "0.2"
+memchr = { version = "2", optional = true }
 tracing = { version = "0.1", optional = true }
 
 [dev-dependencies]
@@ -34,6 +35,16 @@ axum = { version = "0.8", features = ["tracing"] }
 tracing = { version = "0.1" }
 hyper = { version = "1", features = ["client", "http1"] }
 hyper-util = { version = "0.1", features = ["tokio"] }
+criterion = { version = "0.8", features = ["async_tokio"] }
+tokio-stream = "0.1"
+thiserror = "2"
+sse-core = "0.2.3"
+
+[[bench]]
+name = "bench"
+harness = false
+
 [features]
-default = []
+default = ["memchr"]
+memchr = ["dep:memchr"]
 tracing = ["dep:tracing"]
