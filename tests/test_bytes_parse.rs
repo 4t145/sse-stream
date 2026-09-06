@@ -313,3 +313,54 @@ async fn test_bom_split_across_chunks() {
         .unwrap();
     assert_eq!(sse.data, Some("hello".to_string()));
 }
+
+#[tokio::test]
+async fn test_fragmented_data_line_split_mid_utf8_char() {
+    // The first fragment already carries the `data:` prefix, so the value
+    // streams into the data buffer directly; the multi-byte character 你 is
+    // split across two fragments and must be validated only once the line
+    // completes.
+    let out = collect_from_chunks(vec![b"data: \xe4", b"\xbd\xa0 ok\n\n"]).await;
+    assert_eq!(out, vec![data_only("你 ok")]);
+}
+
+#[tokio::test]
+async fn test_fragmented_data_line_five_byte_chunks() {
+    // 5-byte fragments engage the direct-append fast path (`data:` fits) and
+    // are guaranteed to split some multi-byte characters.
+    const PAYLOAD: &str = "data: 你好世界🦀\n\n";
+    let out = collect_from_chunks(PAYLOAD.as_bytes().chunks(5).collect()).await;
+    assert_eq!(out, vec![data_only("你好世界🦀")]);
+}
+
+#[tokio::test]
+async fn test_fragmented_data_line_empty_first_fragment() {
+    let out = collect_from_chunks(vec![b"data:", b"payload\n\n"]).await;
+    assert_eq!(out, vec![data_only("payload")]);
+}
+
+#[tokio::test]
+async fn test_fragmented_data_line_does_not_leak_into_next_event() {
+    // First event goes through the direct-append path, the second through
+    // the buffered path (`da` does not carry the full prefix); both must
+    // come out intact.
+    let out = collect_from_chunks(vec![b"data: first-", b"part2\n\nda", b"ta: second\n\n"]).await;
+    assert_eq!(out, vec![data_only("first-part2"), data_only("second")]);
+}
+
+#[tokio::test]
+async fn test_invalid_utf8_in_fragmented_data_line() {
+    let stream = futures_util::stream::iter(
+        [&b"data: \xff"[..], b"\xfe\n\n"]
+            .into_iter()
+            .map(|c| Ok::<_, std::convert::Infallible>(Frame::data(Bytes::from_static(c)))),
+    );
+    let body = StreamBody::new(stream);
+    let mut sse_body = SseStream::new(body);
+
+    let first = sse_body.next().await.expect("stream ended early");
+    assert!(
+        matches!(first, Err(sse_stream::Error::Utf8Parse(_))),
+        "expected Utf8Parse error, got {first:?}"
+    );
+}
