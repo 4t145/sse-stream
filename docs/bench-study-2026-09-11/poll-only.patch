@@ -1,0 +1,48 @@
+--- a/src/stream.rs
++++ b/src/stream.rs
+@@ -640,34 +640,22 @@
+         loop {
+             if let Some(data) = this.data.as_mut() {
+                 match this.parser.parse_buf(data) {
+-                    Ok(Some(sse)) => {
+-                        if !data.has_remaining() {
+-                            *this.data = None;
+-                        }
+-                        return Poll::Ready(Some(Ok(sse)));
+-                    }
+-                    Ok(None) => *this.data = None,
++                    Ok(Some(sse)) => return Poll::Ready(Some(Ok(sse))),
++                    Ok(None) => {}
+                     Err(error) => {
+                         *this.data = None;
+                         return Poll::Ready(Some(Err(error)));
+                     }
+                 }
+             }
+-
+             match ready!(this.stream.as_mut().try_poll_next(cx)) {
+                 Some(Err(error)) => return Poll::Ready(Some(Err(Error::Body(Box::new(error))))),
+-                None => return Poll::Ready(None),
+-                Some(Ok(mut data)) => match this.parser.parse_buf(&mut data) {
+-                    Ok(Some(sse)) => {
+-                        if data.has_remaining() {
+-                            *this.data = Some(data);
+-                        }
+-                        return Poll::Ready(Some(Ok(sse)));
+-                    }
+-                    Ok(None) => {}
+-                    Err(error) => return Poll::Ready(Some(Err(error))),
+-                },
+-            }
+-        }
+-    }
+-}
++                None => {
++                    *this.data = None;
++                    return Poll::Ready(None);
++                }
++                Some(Ok(data)) => *this.data = Some(data),
++            }
++        }
++    }
++}

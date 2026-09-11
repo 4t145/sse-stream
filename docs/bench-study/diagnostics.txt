@@ -1,0 +1,36 @@
+allocation-probe.log
+type sizes: Sse=88 SseEvent=64 ParseChunkResult=96
+100000 small events
+baseline: events=100000, allocs=100002, reallocs=1, requested_bytes=1800051, output_capacity_sum=1800000, last_capacity=18
+prototype: events=100000, allocs=100000, reallocs=0, requested_bytes=900000, output_capacity_sum=900000, last_capacity=9
+sse-core: events=100000, allocs=100001, reallocs=1, requested_bytes=1800027, output_capacity_sum=1800000, last_capacity=18
+one 40k then 1000 one-byte events
+baseline: events=1001, allocs=1002, reallocs=1, requested_bytes=80200000, output_capacity_sum=80080000, last_capacity=80000
+prototype: events=1001, allocs=1001, reallocs=0, requested_bytes=41000, output_capacity_sum=41000, last_capacity=1
+sse-core: events=1001, allocs=1002, reallocs=1, requested_bytes=80200000, output_capacity_sum=80080000, last_capacity=80000
+
+overhead-probe.log
+small_4b: bytes=1700000, chunks=425000
+input_bytes_tokio: median_us=6360.155
+input_slice_tokio: median_us=479.747
+input_bytes_futures: median_us=6239.696
+baseline_bytes_tokio: median_us=12003.442
+baseline_slice_tokio: median_us=6593.970
+prototype_bytes_tokio: median_us=10312.202
+prototype_slice_tokio: median_us=5466.650
+keepalive_4b: bytes=2600000, chunks=650000
+input_bytes_tokio: median_us=9820.175
+input_slice_tokio: median_us=901.943
+input_bytes_futures: median_us=9544.277
+baseline_bytes_tokio: median_us=12638.194
+baseline_slice_tokio: median_us=3986.025
+prototype_bytes_tokio: median_us=10822.499
+prototype_slice_tokio: median_us=3443.989
+medium_10b: bytes=1054208, chunks=105421
+input_bytes_tokio: median_us=1579.945
+input_slice_tokio: median_us=112.027
+input_bytes_futures: median_us=1555.899
+baseline_bytes_tokio: median_us=2354.936
+baseline_slice_tokio: median_us=875.467
+prototype_bytes_tokio: median_us=1967.780
+prototype_slice_tokio: median_us=847.603

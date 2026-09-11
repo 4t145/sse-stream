@@ -1,0 +1,16 @@
+{
+  "date": "2026-09-10",
+  "head": "06ae23b",
+  "basis": "working tree snapshot including existing uncommitted changes",
+  "cpu": "Intel Core i5-13600K, taskset -c 2",
+  "rustc": "1.98.0 (88d9e12ae 2026-08-18)",
+  "criterion": "0.8.2",
+  "sse-core": "0.2.3",
+  "study_dir": "/tmp/sse-bench-study-5ci1q191",
+  "sha256": {
+    "baseline-src/stream.rs": "cf624a4177455f6831e86f095391b3df908268e5100312931018517f475b43f6",
+    "baseline-bench.rs": "eb5fcc8ae8f92ff01e885fc26740226865d5cc74166e3b6bff2d50ba583238a0",
+    "Cargo.lock": "ff7050b27262cd8562353ea218c48e388ebacb8cd5690de300f5cae653969f0f",
+    "working_tree_Cargo.lock": "6a974456f560cf07f5fa7141fa88827ab413bfe4d963bead08ce9f16fac12466"
+  }
+}

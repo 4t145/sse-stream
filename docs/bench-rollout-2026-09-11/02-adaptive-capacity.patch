@@ -1,0 +1,32 @@
+--- a/src/stream.rs
++++ b/src/stream.rs
+@@ -210,13 +210,26 @@
+         } else {
+             // Drop the separator of the last data line.
+             self.data_buf.pop();
+-            let data_bytes = std::mem::take(&mut self.data_buf);
++            let data_bytes = if self.data_buf.capacity() > 4096
++                && self.data_buf.len() < self.data_buf.capacity() / 4
++            {
++                // Do not make small outputs inherit a previous large event's
++                // capacity. Retain the staging buffer for future fragmented
++                // events, and copy only the small current payload.
++                let data = self.data_buf.clone();
++                self.data_buf.clear();
++                data
++            } else {
++                let data = std::mem::take(&mut self.data_buf);
++                // Transfer large outputs without another payload copy, while
++                // reserving space for the next similarly sized event.
++                self.data_buf = Vec::with_capacity(data.capacity());
++                data
++            };
+             // SAFETY: `data_buf` only ever contains `data` field values joined
+             // by the ASCII separator b'\n', and every byte of those values
+             // passed UTF-8 validation before dispatch.
+             let data = unsafe { String::from_utf8_unchecked(data_bytes) };
+-            // Keep the allocation for the next event.
+-            self.data_buf = Vec::with_capacity(data.capacity());
+             Some(data)
+         };
+ 

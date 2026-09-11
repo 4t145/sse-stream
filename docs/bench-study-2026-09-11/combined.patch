@@ -1,0 +1,265 @@
+--- a/src/stream.rs
++++ b/src/stream.rs
+@@ -210,13 +210,21 @@
+         } else {
+             // Drop the separator of the last data line.
+             self.data_buf.pop();
+-            let data_bytes = std::mem::take(&mut self.data_buf);
+-            // SAFETY: `data_buf` only ever contains `data` field values joined
+-            // by the ASCII separator b'\n', and every byte of those values
+-            // passed `str::from_utf8` before dispatch.
+-            let data = unsafe { String::from_utf8_unchecked(data_bytes) };
+-            // Keep the allocation for the next event.
+-            self.data_buf = Vec::with_capacity(data.capacity());
++            let data = if self.data_buf.capacity() > 4096
++                && self.data_buf.len() < self.data_buf.capacity() / 4
++            {
++                // Keep a large staging buffer but give a small event a right-sized allocation.
++                // SAFETY: values and separators were validated before dispatch.
++                let data = unsafe { String::from_utf8_unchecked(self.data_buf.clone()) };
++                self.data_buf.clear();
++                data
++            } else {
++                let data_bytes = std::mem::take(&mut self.data_buf);
++                // SAFETY: values and separators were validated before dispatch.
++                let data = unsafe { String::from_utf8_unchecked(data_bytes) };
++                self.data_buf = Vec::with_capacity(data.capacity());
++                data
++            };
+             Some(data)
+         };
+ 
+@@ -230,7 +238,7 @@
+ 
+     #[inline]
+     fn push_data_line(&mut self, field_value: &[u8]) -> Result<(), Error> {
+-        let data_line = std::str::from_utf8(field_value).map_err(Error::Utf8Parse)?;
++        let data_line = validate_utf8(field_value).map_err(Error::Utf8Parse)?;
+         self.has_fields = true;
+         self.data_buf.extend_from_slice(data_line.as_bytes());
+         self.data_buf.push(b'\n');
+@@ -262,7 +270,7 @@
+                 self.push_data_line(field_value)?;
+             }
+             b"event" => {
+-                let event_value = std::str::from_utf8(field_value).map_err(Error::Utf8Parse)?;
++                let event_value = validate_utf8(field_value).map_err(Error::Utf8Parse)?;
+                 if self.event.is_some() {
+                     return Err(Error::DuplicatedEventLine);
+                 }
+@@ -277,7 +285,7 @@
+                     tracing::warn!(?line, "id field contains NULL byte, ignoring per spec");
+                     return Ok(None);
+                 }
+-                let id_value = std::str::from_utf8(field_value).map_err(Error::Utf8Parse)?;
++                let id_value = validate_utf8(field_value).map_err(Error::Utf8Parse)?;
+                 if self.id.is_some() {
+                     return Err(Error::DuplicatedIdLine);
+                 }
+@@ -285,7 +293,7 @@
+                 self.id = Some(id_value.to_owned());
+             }
+             b"retry" => {
+-                let retry_value = std::str::from_utf8(field_value)
++                let retry_value = validate_utf8(field_value)
+                     .map_err(Error::Utf8Parse)?
+                     .trim_ascii()
+                     .parse::<u64>()
+@@ -300,7 +308,7 @@
+                 #[cfg(feature = "tracing")]
+                 {
+                     if tracing::enabled!(tracing::Level::DEBUG) {
+-                        let comment = std::str::from_utf8(field_value).map_err(Error::Utf8Parse)?;
++                        let comment = validate_utf8(field_value).map_err(Error::Utf8Parse)?;
+                         tracing::debug!(?comment, "sse comment line");
+                     }
+                 }
+@@ -409,6 +417,22 @@
+         }
+ 
+         while !bytes.is_empty() {
++            if self.pending_line.is_empty() && bytes[0] == b':' && !comment_tracing_enabled() {
++                self.first_line = false;
++                let Some(line_end) = find_comment_line_end(bytes) else {
++                    self.discarding_comment = true;
++                    return Ok((original_len, None));
++                };
++                bytes = self.advance_past_delimiter(bytes, line_end);
++                if !self.has_fields {
++                    bytes = match bytes.first() {
++                        Some(b'\n') => &bytes[1..],
++                        Some(b'\r') => self.advance_past_delimiter(bytes, 0),
++                        _ => bytes,
++                    };
++                }
++                continue;
++            }
+             let Some(line_end) = find_line_end(bytes) else {
+                 // Incomplete line. A `data:` prefix means the value can stream
+                 // into `data_buf`; anything else is buffered until the line
+@@ -451,6 +475,22 @@
+                 self.first_line = false;
+                 let value = &bytes[DATA_FIELD_PREFIX.len()..line_end];
+                 let value = value.strip_prefix(b" ").unwrap_or(value);
++                // A complete single data line and its LF event boundary fit in this slice.
++                if !self.has_fields
++                    && bytes[line_end] == b'\n'
++                    && bytes.get(line_end + 1) == Some(&b'\n')
++                {
++                    let data = validate_utf8(value).map_err(Error::Utf8Parse)?.to_owned();
++                    return Ok((
++                        original_len - bytes.len() + line_end + 2,
++                        Some(Sse {
++                            event: None,
++                            data: Some(data),
++                            id: None,
++                            retry: None,
++                        }),
++                    ));
++                }
+                 self.push_data_line(value)?;
+                 None
+             } else if self.pending_line.is_empty() && bytes[0] == b':' {
+@@ -462,7 +502,7 @@
+                 if tracing::enabled!(tracing::Level::DEBUG) {
+                     let value = &bytes[1..line_end];
+                     let value = value.strip_prefix(b" ").unwrap_or(value);
+-                    let comment = std::str::from_utf8(value).map_err(Error::Utf8Parse)?;
++                    let comment = validate_utf8(value).map_err(Error::Utf8Parse)?;
+                     tracing::debug!(?comment, "sse comment line");
+                 }
+ 
+@@ -530,7 +570,7 @@
+     #[inline]
+     fn finish_data_line(&mut self, line_start: usize) -> Result<(), Error> {
+         self.pending_data_line = None;
+-        if let Err(err) = std::str::from_utf8(&self.data_buf[line_start..]) {
++        if let Err(err) = validate_utf8(&self.data_buf[line_start..]) {
+             self.data_buf.truncate(line_start);
+             return Err(Error::Utf8Parse(err));
+         }
+@@ -553,22 +593,16 @@
+ 
+ /// Find the index of the first `\n` or `\r` in `bytes`.
+ ///
+-/// The first few bytes are scanned scalar, the rest with
+-/// [`memchr2`](memchr::memchr2): SIMD dispatch does not pay off on short lines.
++/// Short slices are scanned scalar; longer slices go directly to
++/// [`memchr2`](memchr::memchr2). Complete comments use their own scanner.
+ #[cfg(feature = "memchr")]
+ #[inline]
+ fn find_line_end(bytes: &[u8]) -> Option<usize> {
+-    /// How many leading bytes are scanned scalar before delegating to `memchr2`.
+-    const SCALAR_HEAD: usize = 16;
+-
+-    let head_len = bytes.len().min(SCALAR_HEAD);
+-    let head_hit = bytes[..head_len]
+-        .iter()
+-        .position(|byte| matches!(*byte, b'\n' | b'\r'));
+-    if head_len == bytes.len() || head_hit.is_some() {
+-        return head_hit;
+-    }
+-    memchr::memchr2(b'\n', b'\r', &bytes[head_len..]).map(|i| i + head_len)
++    if bytes.len() <= 16 {
++        bytes.iter().position(|byte| matches!(*byte, b'\n' | b'\r'))
++    } else {
++        memchr::memchr2(b'\n', b'\r', bytes)
++    }
+ }
+ 
+ /// Find the index of the first `\n` or `\r` in `bytes`.
+@@ -640,34 +674,61 @@
+         loop {
+             if let Some(data) = this.data.as_mut() {
+                 match this.parser.parse_buf(data) {
+-                    Ok(Some(sse)) => {
+-                        if !data.has_remaining() {
+-                            *this.data = None;
+-                        }
+-                        return Poll::Ready(Some(Ok(sse)));
+-                    }
+-                    Ok(None) => *this.data = None,
++                    Ok(Some(sse)) => return Poll::Ready(Some(Ok(sse))),
++                    Ok(None) => {}
+                     Err(error) => {
+                         *this.data = None;
+                         return Poll::Ready(Some(Err(error)));
+                     }
+                 }
+             }
+-
+             match ready!(this.stream.as_mut().try_poll_next(cx)) {
+                 Some(Err(error)) => return Poll::Ready(Some(Err(Error::Body(Box::new(error))))),
+-                None => return Poll::Ready(None),
+-                Some(Ok(mut data)) => match this.parser.parse_buf(&mut data) {
+-                    Ok(Some(sse)) => {
+-                        if data.has_remaining() {
+-                            *this.data = Some(data);
+-                        }
+-                        return Poll::Ready(Some(Ok(sse)));
+-                    }
+-                    Ok(None) => {}
+-                    Err(error) => return Poll::Ready(Some(Err(error))),
+-                },
+-            }
+-        }
+-    }
+-}
++                None => {
++                    *this.data = None;
++                    return Poll::Ready(None);
++                }
++                Some(Ok(data)) => *this.data = Some(data),
++            }
++        }
++    }
++}
++
++/// Find the index of the first `\n` or `\r` in `bytes`.
++///
++/// The first few bytes are scanned scalar, the rest with
++/// [`memchr2`](memchr::memchr2): SIMD dispatch does not pay off on short lines.
++#[cfg(feature = "memchr")]
++#[inline]
++fn find_comment_line_end(bytes: &[u8]) -> Option<usize> {
++    /// How many leading bytes are scanned scalar before delegating to `memchr2`.
++    const SCALAR_HEAD: usize = 16;
++
++    let head_len = bytes.len().min(SCALAR_HEAD);
++    let head_hit = bytes[..head_len]
++        .iter()
++        .position(|byte| matches!(*byte, b'\n' | b'\r'));
++    if head_len == bytes.len() || head_hit.is_some() {
++        return head_hit;
++    }
++    memchr::memchr2(b'\n', b'\r', &bytes[head_len..]).map(|i| i + head_len)
++}
++
++/// Find the index of the first `\n` or `\r` in `bytes`.
++#[cfg(not(feature = "memchr"))]
++#[inline]
++fn find_comment_line_end(bytes: &[u8]) -> Option<usize> {
++    bytes.iter().position(|byte| matches!(*byte, b'\n' | b'\r'))
++}
++
++#[inline]
++fn validate_utf8(value: &[u8]) -> Result<&str, Utf8Error> {
++    if value.len() >= 256 {
++        match simdutf8::basic::from_utf8(value) {
++            Ok(text) => Ok(text),
++            Err(_) => std::str::from_utf8(value),
++        }
++    } else {
++        std::str::from_utf8(value)
++    }
++}
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -12,6 +12,7 @@
+ documentation = "https://docs.rs/sse-stream"
+ 
+ [dependencies]
++simdutf8 = "0.1.5"
+ bytes = "1"
+ futures-util = { version = "0.3" }
+ http-body = "1"

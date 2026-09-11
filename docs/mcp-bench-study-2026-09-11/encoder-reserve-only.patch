@@ -1,0 +1,30 @@
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -49,7 +49,14 @@
+ 
+ impl From<Sse> for bytes::Bytes {
+     fn from(val: Sse) -> Self {
+-        let mut bytes = Vec::new();
++        // Reserve the complete wire representation, including prefixes and line endings.
++        let retry = val.retry.map(|retry| retry.to_string());
++        let capacity = 1
++            + val.event.as_ref().map_or(0, |value| 8 + value.len())
++            + val.data.as_ref().map_or(0, |value| 7 + value.len())
++            + val.id.as_ref().map_or(0, |value| 5 + value.len())
++            + retry.as_ref().map_or(0, |value| 8 + value.len());
++        let mut bytes = Vec::with_capacity(capacity);
+         if let Some(event) = val.event {
+             bytes.extend_from_slice(b"event: ");
+             bytes.extend_from_slice(event.as_bytes());
+@@ -65,9 +72,9 @@
+             bytes.extend_from_slice(id.as_bytes());
+             bytes.push(b'\n');
+         }
+-        if let Some(retry) = val.retry {
++        if let Some(retry) = retry {
+             bytes.extend_from_slice(b"retry: ");
+-            bytes.extend(retry.to_string().as_bytes());
++            bytes.extend_from_slice(retry.as_bytes());
+             bytes.push(b'\n');
+         }
+         bytes.push(b'\n');

@@ -1,0 +1,11 @@
+--- a/src/stream.rs
++++ b/src/stream.rs
+@@ -386,7 +386,7 @@
+         // A pending data line resumes here. It can only be pending across
+         // chunks: the branch that starts one below always returns.
+         if let Some(mut pending) = self.pending_data_line {
+-            if pending.strip_leading_space {
++            if pending.strip_leading_space && !bytes.is_empty() {
+                 // Consume the optional single space if the chunk split fell
+                 // between `data:` and its value.
+                 pending.strip_leading_space = false;

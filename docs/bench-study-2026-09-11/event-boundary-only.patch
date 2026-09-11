@@ -1,0 +1,16 @@
+--- a/src/stream.rs
++++ b/src/stream.rs
+@@ -451,7 +451,13 @@
+                 self.first_line = false;
+                 let value = &bytes[DATA_FIELD_PREFIX.len()..line_end];
+                 let value = value.strip_prefix(b" ").unwrap_or(value);
++                let complete_event = !self.has_fields
++                    && bytes[line_end] == b'\n'
++                    && bytes.get(line_end + 1) == Some(&b'\n');
+                 self.push_data_line(value)?;
++                if complete_event {
++                    return Ok((original_len - bytes.len() + line_end + 2, self.dispatch()));
++                }
+                 None
+             } else if self.pending_line.is_empty() && bytes[0] == b':' {
+                 // Comments dominate idle streams. Parse tracing data only when

@@ -1,0 +1,138 @@
+--- a/src/stream.rs
++++ b/src/stream.rs
+@@ -423,51 +423,16 @@
+         }
+ 
+         while !bytes.is_empty() {
+-            let Some(line_end) = find_line_end(bytes) else {
+-                // Incomplete line. A `data:` prefix means the value can stream
+-                // into `data_buf`; anything else is buffered until the line
+-                // completes.
+-                if self.pending_line.is_empty() && bytes.starts_with(DATA_FIELD_PREFIX) {
+-                    self.first_line = false;
+-                    let line_start = self.data_buf.len();
+-                    let value = bytes[DATA_FIELD_PREFIX.len()..]
+-                        .strip_prefix(b" ")
+-                        .unwrap_or(&bytes[DATA_FIELD_PREFIX.len()..]);
+-                    self.data_buf.extend_from_slice(value);
+-                    self.has_fields = true;
+-                    self.pending_data_line = Some(PendingDataLine {
+-                        line_start,
+-                        strip_leading_space: bytes.len() == DATA_FIELD_PREFIX.len(),
+-                    });
+-                } else if self.pending_line.is_empty()
+-                    && bytes[0] == b':'
+-                    && !comment_tracing_enabled()
+-                {
+-                    self.first_line = false;
+-                    self.discarding_comment = true;
+-                } else {
+-                    self.pending_line.extend_from_slice(bytes);
+-                }
+-                return Ok((original_len, None));
+-            };
+-
+-            let event = if self.pending_line.is_empty() && line_end == 0 {
+-                // Blank lines are event boundaries. Keep this common path out
+-                // of the generic field parser.
+-                self.first_line = false;
+-                self.dispatch()
+-            } else if self.pending_line.is_empty()
+-                && bytes[..line_end].starts_with(DATA_FIELD_PREFIX)
+-            {
+-                // `data` dominates active streams. Its fixed field name means
+-                // there is no need to scan the line for a colon and dispatch
+-                // through the generic field match.
+-                self.first_line = false;
+-                let value = &bytes[DATA_FIELD_PREFIX.len()..line_end];
+-                let value = value.strip_prefix(b" ").unwrap_or(value);
+-                self.push_data_line(value)?;
+-                None
+-            } else if self.pending_line.is_empty() && bytes[0] == b':' {
++            if self.pending_line.is_empty() && bytes[0] == b':' {
++                let Some(line_end) = find_line_end(bytes) else {
++                    if comment_tracing_enabled() {
++                        self.pending_line.extend_from_slice(bytes);
++                    } else {
++                        self.first_line = false;
++                        self.discarding_comment = true;
++                    }
++                    return Ok((original_len, None));
++                };
+                 // Comments dominate idle streams. Parse tracing data only when
+                 // it can actually be observed, then skip the common blank line
+                 // that follows a standalone keepalive.
+@@ -489,6 +454,54 @@
+                     };
+                 }
+                 continue;
++            }
++            let data_value = if self.pending_line.is_empty() {
++                bytes.strip_prefix(DATA_FIELD_PREFIX)
++            } else {
++                None
++            };
++            let line_end = match data_value {
++                Some(value) => find_data_line_end(value).map(|end| end + DATA_FIELD_PREFIX.len()),
++                None => find_line_end(bytes),
++            };
++            let Some(line_end) = line_end else {
++                // Incomplete line. A `data:` prefix means the value can stream
++                // into `data_buf`; anything else is buffered until the line
++                // completes.
++                if let Some(value) = data_value {
++                    self.first_line = false;
++                    let line_start = self.data_buf.len();
++                    let value = value.strip_prefix(b" ").unwrap_or(value);
++                    self.data_buf.extend_from_slice(value);
++                    self.has_fields = true;
++                    self.pending_data_line = Some(PendingDataLine {
++                        line_start,
++                        strip_leading_space: bytes.len() == DATA_FIELD_PREFIX.len(),
++                    });
++                } else {
++                    self.pending_line.extend_from_slice(bytes);
++                }
++                return Ok((original_len, None));
++            };
++
++            let event = if self.pending_line.is_empty() && line_end == 0 {
++                // Blank lines are event boundaries. Keep this common path out
++                // of the generic field parser.
++                self.first_line = false;
++                self.dispatch()
++            } else if let Some(value) = data_value {
++                // `data` dominates active streams. Its fixed field name means
++                // there is no need to scan the line for a colon and dispatch
++                // through the generic field match.
++                self.first_line = false;
++                let value = &value[..line_end - DATA_FIELD_PREFIX.len()];
++                let value = value.strip_prefix(b" ").unwrap_or(value);
++                self.push_data_line(value)?;
++                // A following LF blank line completes the event in this iteration.
++                if bytes[line_end..].starts_with(b"\n\n") {
++                    return Ok((original_len - bytes.len() + line_end + 2, self.dispatch()));
++                }
++                None
+             } else {
+                 self.parse_complete_line(&bytes[..line_end])?
+             };
+@@ -576,6 +589,18 @@
+     {
+         false
+     }
++}
++
++#[inline]
++fn find_data_line_end(bytes: &[u8]) -> Option<usize> {
++    #[cfg(feature = "memchr")]
++    {
++        const SCALAR_MAX_LEN: usize = 16;
++        if bytes.len() > SCALAR_MAX_LEN {
++            return memchr::memchr2(b'\n', b'\r', bytes);
++        }
++    }
++    bytes.iter().position(|byte| matches!(*byte, b'\n' | b'\r'))
+ }
+ 
+ /// Find the index of the first `\n` or `\r` in `bytes`.

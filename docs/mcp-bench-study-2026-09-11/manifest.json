@@ -1,0 +1,25 @@
+{
+  "date": "2026-09-11",
+  "sdk_measured": "rmcp 1.1.0 with client feature, default features disabled",
+  "protocol_context": "Official current specification is 2026-07-28; measured SDK model is rmcp 1.1.0, not a current-version interoperability test.",
+  "rust": "rustc 1.98.0 (88d9e12ae 2026-08-18)",
+  "cpu": "Intel Core i5-13600K, taskset logical CPU 2; frequency not locked",
+  "method": "31 interleaved rounds, shuffled variants each round; warmed blocks target 3ms; paired ratios versus same-round baseline",
+  "stream": "Prebuilt Bytes chunks, tokio_stream::iter, current-thread Tokio runtime; no sockets/TLS/HTTP/proxy/business execution",
+  "scope": "15 payload/framing/chunk scenarios; SSE parse and SSE plus serde_json to ServerJsonRpcMessage measured separately; 6 encoding scenarios",
+  "metrics": "p10/p90 are paired ratio quantiles, not confidence intervals. JSON-only bypasses both SSE and stream/input work; not an exact flamegraph share.",
+  "tests": "Generic encoder byte-for-byte equivalence on 320 field/value/retry combinations; all measured messages parse successfully and event counts match; all three encoders agree on all fixture messages.",
+  "source_hashes": {
+    "src/main.rs": "cac4e4f9cac09cbd3378c8c6629bf806dcc6cfaaf5c72fbc1c85e48700a17044",
+    "Cargo.toml": "ed945b0e31c021e8e08b0b0396d2f2b73bd68d5145d7091be2b5be57034eb125",
+    "Cargo.lock": "ad68840464604122b37b2f5b4abf9db73107bfc67a872cf1725288ac98d0c3fe",
+    "variants/baseline/src/stream.rs": "cf624a4177455f6831e86f095391b3df908268e5100312931018517f475b43f6",
+    "variants/baseline/src/lib.rs": "3059b23ed8550af47078015fe2821490932f69fc843ce71aa36136ff2ed5cc3a"
+  },
+  "screening": "Earlier screen used a hand-written data/id-only reserved encoder. Reported final results use the general From<Sse> reservation patch. Only final results included in measurements.csv.",
+  "reproduce": [
+    "cargo test --release --offline",
+    "cargo build --release --offline",
+    "taskset -c 2 target/release/sse-mcp-study"
+  ]
+}

@@ -1,0 +1,76 @@
+{
+  "baseline_sha256": "69791dac94a262d2978a9e20ed6776c8efa3f447579f3e1278283bae15b53cac",
+  "head": "06ae23b1a3c5aba1eb272864a44d58ce9c4a2c19",
+  "variants": {
+    "early_comment": "ca7912b7952e0f7e93e098f0dfa4fb5d5d047ab3939c4f1d61e19fe3a7f104c6",
+    "field_scan": "110f981a8323f751c66da8d47615c18f73b9e810c6886aab753c8eb2431abf9c",
+    "guarded": "685d71a7f417c8ae41460d6a0394d9294c3cae7484d0ab6cdf45022f3b23dfb4",
+    "head8": "bd4baaf0d4bc55bbf2720f2bd00e2d6d99cc8351fb5f91510be9e7f5fb358e52",
+    "head4": "878a0259d3c64ead416a58de0b4b1eade422815e996ee97d177787414edf749f",
+    "combined": "e5ea911dbb67e4297037206786eaef725e5a54434b7e775ca9c0ce5b84b218b6",
+    "scan": "a7ba0323b7eed105bac0914c3204986a4c53ce20fcf3dc0d72190590aabecc14",
+    "boundary": "b9bf37a714607d0644aa8517536ac94bfc33db985096ebbf9ab661645fb0f89b",
+    "baseline": "69791dac94a262d2978a9e20ed6776c8efa3f447579f3e1278283bae15b53cac"
+  },
+  "chosen": "early_comment, with duplicate incomplete-line checks removed",
+  "final_sha256": "efc8c9541bc78087ca0cc87dd18d4cb0d0c4bf728129b8aeb9186df06c9faefc",
+  "rustc": "rustc 1.98.0 (88d9e12ae 2026-08-18)\nbinary: rustc\ncommit-hash: 88d9e12ae178fab0fb5cc050a94da85685d449ea\ncommit-date: 2026-08-18\nhost: x86_64-unknown-linux-gnu\nrelease: 1.98.0\nLLVM version: 22.1.8\n",
+  "cpu": "Intel Core i5-13600K; logical CPU 2, SMT sibling 3",
+  "governor": "powersave",
+  "flags": {
+    "RUSTFLAGS": null,
+    "CARGO_ENCODED_RUSTFLAGS": null
+  },
+  "screen": {
+    "rounds": 31,
+    "target_block_ms": 3,
+    "order": "deterministic shuffled order per round; same-round baseline pairing"
+  },
+  "criterion": {
+    "rounds": 3,
+    "samples": 40,
+    "warmup_ms": 150,
+    "target_measurement_ms": 700,
+    "nresamples": 10000,
+    "order": [
+      "baseline,current,core",
+      "current,core,baseline",
+      "core,baseline,current"
+    ]
+  },
+  "features": "default features for benchmarks; root tested all-features, no-default, memchr only, simdutf8 only",
+  "source_hashes": {
+    "src/stream.rs": "efc8c9541bc78087ca0cc87dd18d4cb0d0c4bf728129b8aeb9186df06c9faefc",
+    "src/lib.rs": "7dff6584487745925ca5b6c1f19cefc2def9df019c7090a30c844324af8a01a4",
+    "Cargo.toml": "f5595648f54ee60e02f69a212f623f57b549c2df754046f6fda53a7da31c7022",
+    "benches/scenarios/mod.rs": "49c03c39d9315739d267ed7313815ff9d0257acbb9881e274cbef8a0718ff4f1",
+    "tests/test_bytes_parse.rs": "5157e5e3009afd34eb09bec35df593d0ce2a0aec44b41226a12a0e9446ab900a",
+    "tests/test_tracing.rs": "183d47fc897da28a0d07f03687a2562285f03d5d693e8e3514c91be3ddb45eb9"
+  },
+  "focus": {
+    "rounds": 2,
+    "cases": [
+      "large_utf8_tcp",
+      "large_json_utf8_tcp",
+      "large_json_base64_tcp",
+      "large_data_tcp_chunks",
+      "json_line_tcp"
+    ],
+    "samples": 80,
+    "warmup_ms": 200,
+    "target_measurement_ms": 2000,
+    "orders": [
+      "current,baseline",
+      "baseline,current"
+    ]
+  },
+  "final_screen": {
+    "rounds": 51,
+    "target_block_ms": 3,
+    "variants": [
+      "baseline",
+      "current",
+      "core"
+    ]
+  }
+}

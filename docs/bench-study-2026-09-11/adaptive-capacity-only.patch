@@ -1,0 +1,31 @@
+--- a/src/stream.rs
++++ b/src/stream.rs
+@@ -210,13 +210,21 @@
+         } else {
+             // Drop the separator of the last data line.
+             self.data_buf.pop();
+-            let data_bytes = std::mem::take(&mut self.data_buf);
+-            // SAFETY: `data_buf` only ever contains `data` field values joined
+-            // by the ASCII separator b'\n', and every byte of those values
+-            // passed `str::from_utf8` before dispatch.
+-            let data = unsafe { String::from_utf8_unchecked(data_bytes) };
+-            // Keep the allocation for the next event.
+-            self.data_buf = Vec::with_capacity(data.capacity());
++            let data = if self.data_buf.capacity() > 4096
++                && self.data_buf.len() < self.data_buf.capacity() / 4
++            {
++                // Keep a large staging buffer but give a small event a right-sized allocation.
++                // SAFETY: values and separators were validated before dispatch.
++                let data = unsafe { String::from_utf8_unchecked(self.data_buf.clone()) };
++                self.data_buf.clear();
++                data
++            } else {
++                let data_bytes = std::mem::take(&mut self.data_buf);
++                // SAFETY: values and separators were validated before dispatch.
++                let data = unsafe { String::from_utf8_unchecked(data_bytes) };
++                self.data_buf = Vec::with_capacity(data.capacity());
++                data
++            };
+             Some(data)
+         };
+ 

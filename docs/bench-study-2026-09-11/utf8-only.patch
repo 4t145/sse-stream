@@ -1,0 +1,91 @@
+--- a/src/stream.rs
++++ b/src/stream.rs
+@@ -230,7 +230,7 @@
+ 
+     #[inline]
+     fn push_data_line(&mut self, field_value: &[u8]) -> Result<(), Error> {
+-        let data_line = std::str::from_utf8(field_value).map_err(Error::Utf8Parse)?;
++        let data_line = validate_utf8(field_value).map_err(Error::Utf8Parse)?;
+         self.has_fields = true;
+         self.data_buf.extend_from_slice(data_line.as_bytes());
+         self.data_buf.push(b'\n');
+@@ -262,7 +262,7 @@
+                 self.push_data_line(field_value)?;
+             }
+             b"event" => {
+-                let event_value = std::str::from_utf8(field_value).map_err(Error::Utf8Parse)?;
++                let event_value = validate_utf8(field_value).map_err(Error::Utf8Parse)?;
+                 if self.event.is_some() {
+                     return Err(Error::DuplicatedEventLine);
+                 }
+@@ -277,7 +277,7 @@
+                     tracing::warn!(?line, "id field contains NULL byte, ignoring per spec");
+                     return Ok(None);
+                 }
+-                let id_value = std::str::from_utf8(field_value).map_err(Error::Utf8Parse)?;
++                let id_value = validate_utf8(field_value).map_err(Error::Utf8Parse)?;
+                 if self.id.is_some() {
+                     return Err(Error::DuplicatedIdLine);
+                 }
+@@ -285,7 +285,7 @@
+                 self.id = Some(id_value.to_owned());
+             }
+             b"retry" => {
+-                let retry_value = std::str::from_utf8(field_value)
++                let retry_value = validate_utf8(field_value)
+                     .map_err(Error::Utf8Parse)?
+                     .trim_ascii()
+                     .parse::<u64>()
+@@ -300,7 +300,7 @@
+                 #[cfg(feature = "tracing")]
+                 {
+                     if tracing::enabled!(tracing::Level::DEBUG) {
+-                        let comment = std::str::from_utf8(field_value).map_err(Error::Utf8Parse)?;
++                        let comment = validate_utf8(field_value).map_err(Error::Utf8Parse)?;
+                         tracing::debug!(?comment, "sse comment line");
+                     }
+                 }
+@@ -462,7 +462,7 @@
+                 if tracing::enabled!(tracing::Level::DEBUG) {
+                     let value = &bytes[1..line_end];
+                     let value = value.strip_prefix(b" ").unwrap_or(value);
+-                    let comment = std::str::from_utf8(value).map_err(Error::Utf8Parse)?;
++                    let comment = validate_utf8(value).map_err(Error::Utf8Parse)?;
+                     tracing::debug!(?comment, "sse comment line");
+                 }
+ 
+@@ -530,7 +530,7 @@
+     #[inline]
+     fn finish_data_line(&mut self, line_start: usize) -> Result<(), Error> {
+         self.pending_data_line = None;
+-        if let Err(err) = std::str::from_utf8(&self.data_buf[line_start..]) {
++        if let Err(err) = validate_utf8(&self.data_buf[line_start..]) {
+             self.data_buf.truncate(line_start);
+             return Err(Error::Utf8Parse(err));
+         }
+@@ -671,3 +671,15 @@
+         }
+     }
+ }
++
++#[inline]
++fn validate_utf8(value: &[u8]) -> Result<&str, Utf8Error> {
++    if value.len() >= 256 {
++        match simdutf8::basic::from_utf8(value) {
++            Ok(text) => Ok(text),
++            Err(_) => std::str::from_utf8(value),
++        }
++    } else {
++        std::str::from_utf8(value)
++    }
++}
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -12,6 +12,7 @@
+ documentation = "https://docs.rs/sse-stream"
+ 
+ [dependencies]
++simdutf8 = "0.1.5"
+ bytes = "1"
+ futures-util = { version = "0.3" }
+ http-body = "1"

@@ -1,0 +1,40 @@
+{
+  "date": "2026-09-11",
+  "rust": "rustc 1.98.0 (88d9e12ae 2026-08-18)",
+  "cpu": "Intel Core i5-13600K, logical CPU 2 pinned; frequency not locked",
+  "baseline": "Current working tree at start of turn, plus only split-prefix optional-space bug fix; original uncorrected implementation also measured in step2.csv",
+  "step1": "Default-enabled optional simdutf8 >=256 bytes with std error fallback, and exact initial SSE encoding capacity",
+  "step2": "Step1 plus compact-copy only if staging capacity >4096 and payload length <capacity/4; transfer other outputs and reserve next buffer as before",
+  "cases": "28 decode shapes/chunk patterns and 5 encoding cases; single-line JSON remains an opaque SSE payload",
+  "interleaved_method": "31 randomized interleaved rounds; per-variant warmed blocks target 3ms; paired ratios within same round; Bytes + tokio_stream::iter",
+  "quantiles": "p10/p90 are paired-ratio empirical quantiles, not confidence intervals",
+  "encoding_scope": "Interleaved encode_owned includes cloning strings to construct an owned Sse. Criterion encoding excludes event cloning via iter_batched; neither includes JSON serialization.",
+  "criterion_method": "Full suite, 40 samples, 150ms warmup, 700ms measurement target, 10000 bootstrap resamples; selected concerns retested with rotated order and 50 samples, 200ms warmup, 1s target",
+  "memory_metric": "Allocation requests and sum of output String capacities, not process RSS. Large staging buffer retained per decoder; consumers drop outputs immediately in allocation probe.",
+  "rejected_candidates": "data_only excludes SIMD checks from metadata; cold_copy outlines compact copying. Neither improved the measured tradeoffs; not applied.",
+  "tests": [
+    "all-features: 41 parser/encoding integration tests, 2 local HTTP integration tests of 100000 events each, 3 doctests",
+    "no-default-features: 41 parser/encoding tests",
+    "memchr-only and simdutf8-only: all 3 extended UTF-8 tests each",
+    "standalone cross-variant partition/error equivalence test",
+    "cargo clippy --offline --all-targets --all-features -- -D warnings",
+    "cargo fmt --all -- --check"
+  ],
+  "limits": "No ARM performance measurement, no long-lived concurrent network latency/RSS benchmark, no Miri or sustained fuzzing",
+  "source_hashes": {
+    "Cargo.toml": "f5595648f54ee60e02f69a212f623f57b549c2df754046f6fda53a7da31c7022",
+    "src/lib.rs": "7dff6584487745925ca5b6c1f19cefc2def9df019c7090a30c844324af8a01a4",
+    "src/stream.rs": "69791dac94a262d2978a9e20ed6776c8efa3f447579f3e1278283bae15b53cac",
+    "src/body.rs": "5967a659bc33a151d816ca4b9c1df039ef94935b5de09f2a91222263fd7463b2",
+    "benches/bench.rs": "e46b07a784b9688acb5c7318f84f282dc64155f9dee7bcabae37a1f665bc40a5",
+    "benches/scenarios/mod.rs": "49c03c39d9315739d267ed7313815ff9d0257acbb9881e274cbef8a0718ff4f1",
+    "tests/test_utf8.rs": "b87017f30b5f418999ca8dd631e137eaa093164ea6f0d68d9ce0d300b79bcef4",
+    "tests/test_data_capacity.rs": "f5d5277184444af4495a01bca960bdf34097839c2e9760bfa548383295cbf994"
+  },
+  "borrowed_diagnostic": "Eight representative workloads using borrowed slices plus futures ready input; both ownership and Pending behavior differ from Bytes/Tokio, not an isolated attribution experiment.",
+  "criterion_runs": [
+    "full: baseline,step1,step2,core; 28 decoding and 5 encoding scenarios",
+    "focus2: step2,core,baseline,step1; 9 selected decoding scenarios",
+    "focus3: core,step1,baseline,step2; same 9 decoding scenarios"
+  ]
+}

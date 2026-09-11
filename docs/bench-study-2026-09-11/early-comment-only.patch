@@ -1,0 +1,56 @@
+--- a/src/stream.rs
++++ b/src/stream.rs
+@@ -409,6 +409,22 @@
+         }
+ 
+         while !bytes.is_empty() {
++            if self.pending_line.is_empty() && bytes[0] == b':' && !comment_tracing_enabled() {
++                self.first_line = false;
++                let Some(line_end) = find_comment_line_end(bytes) else {
++                    self.discarding_comment = true;
++                    return Ok((original_len, None));
++                };
++                bytes = self.advance_past_delimiter(bytes, line_end);
++                if !self.has_fields {
++                    bytes = match bytes.first() {
++                        Some(b'\n') => &bytes[1..],
++                        Some(b'\r') => self.advance_past_delimiter(bytes, 0),
++                        _ => bytes,
++                    };
++                }
++                continue;
++            }
+             let Some(line_end) = find_line_end(bytes) else {
+                 // Incomplete line. A `data:` prefix means the value can stream
+                 // into `data_buf`; anything else is buffered until the line
+@@ -671,3 +687,30 @@
+         }
+     }
+ }
++
++/// Find the index of the first `\n` or `\r` in `bytes`.
++///
++/// The first few bytes are scanned scalar, the rest with
++/// [`memchr2`](memchr::memchr2): SIMD dispatch does not pay off on short lines.
++#[cfg(feature = "memchr")]
++#[inline]
++fn find_comment_line_end(bytes: &[u8]) -> Option<usize> {
++    /// How many leading bytes are scanned scalar before delegating to `memchr2`.
++    const SCALAR_HEAD: usize = 16;
++
++    let head_len = bytes.len().min(SCALAR_HEAD);
++    let head_hit = bytes[..head_len]
++        .iter()
++        .position(|byte| matches!(*byte, b'\n' | b'\r'));
++    if head_len == bytes.len() || head_hit.is_some() {
++        return head_hit;
++    }
++    memchr::memchr2(b'\n', b'\r', &bytes[head_len..]).map(|i| i + head_len)
++}
++
++/// Find the index of the first `\n` or `\r` in `bytes`.
++#[cfg(not(feature = "memchr"))]
++#[inline]
++fn find_comment_line_end(bytes: &[u8]) -> Option<usize> {
++    bytes.iter().position(|byte| matches!(*byte, b'\n' | b'\r'))
++}

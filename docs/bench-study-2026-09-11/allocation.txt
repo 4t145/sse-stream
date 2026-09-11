@@ -1,0 +1,10 @@
+100000 small events
+baseline: events=100000, allocs=100002, reallocs=1, requested_bytes=1800051, output_capacity_sum=1800000, last_capacity=18
+adaptive_copy: events=100000, allocs=100001, reallocs=1, requested_bytes=1800027, output_capacity_sum=1800000, last_capacity=18
+prototype: events=100000, allocs=100000, reallocs=0, requested_bytes=900000, output_capacity_sum=900000, last_capacity=9
+sse-core: events=100000, allocs=100001, reallocs=1, requested_bytes=1800027, output_capacity_sum=1800000, last_capacity=18
+one 40k then 1000 multiline events, TCP chunks
+baseline: events=1001, allocs=1003, reallocs=5, requested_bytes=46762420, output_capacity_sum=46670624, last_capacity=46624
+adaptive_copy: events=1001, allocs=1003, reallocs=5, requested_bytes=141420, output_capacity_sum=49624, last_capacity=3
+prototype: events=1001, allocs=1003, reallocs=5, requested_bytes=141420, output_capacity_sum=49624, last_capacity=3
+sse-core: events=1001, allocs=1002, reallocs=5, requested_bytes=46762412, output_capacity_sum=46670624, last_capacity=46624

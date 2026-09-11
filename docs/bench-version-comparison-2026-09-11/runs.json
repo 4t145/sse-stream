@@ -1,0 +1,20 @@
+[
+  {
+    "round": 1,
+    "order": "current,published,core",
+    "started_unix": 1789111678.587978,
+    "elapsed_seconds": 146.33682775497437
+  },
+  {
+    "round": 2,
+    "order": "published,core,current",
+    "started_unix": 1789111824.9250107,
+    "elapsed_seconds": 148.2368459701538
+  },
+  {
+    "round": 3,
+    "order": "core,current,published",
+    "started_unix": 1789111973.1627476,
+    "elapsed_seconds": 146.70601677894592
+  }
+]

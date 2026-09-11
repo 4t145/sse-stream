@@ -1,0 +1,104 @@
+--- a/src/stream.rs
++++ b/src/stream.rs
+@@ -451,6 +451,24 @@
+                 self.first_line = false;
+                 let value = &bytes[DATA_FIELD_PREFIX.len()..line_end];
+                 let value = value.strip_prefix(b" ").unwrap_or(value);
++                // Study prototype: a complete, single-data-line LF event.
++                if !self.has_fields
++                    && bytes[line_end] == b'\n'
++                    && bytes.get(line_end + 1) == Some(&b'\n')
++                {
++                    let data = std::str::from_utf8(value)
++                        .map_err(Error::Utf8Parse)?
++                        .to_owned();
++                    return Ok((
++                        original_len - bytes.len() + line_end + 2,
++                        Some(Sse {
++                            event: None,
++                            data: Some(data),
++                            id: None,
++                            retry: None,
++                        }),
++                    ));
++                }
+                 self.push_data_line(value)?;
+                 None
+             } else if self.pending_line.is_empty() && bytes[0] == b':' {
+@@ -553,22 +571,17 @@
+ 
+ /// Find the index of the first `\n` or `\r` in `bytes`.
+ ///
+-/// The first few bytes are scanned scalar, the rest with
+-/// [`memchr2`](memchr::memchr2): SIMD dispatch does not pay off on short lines.
++/// Short slices are scanned scalar; longer slices go directly to
++/// [`memchr2`](memchr::memchr2). This study strategy still needs separate
++/// tuning for batches of short comment lines.
+ #[cfg(feature = "memchr")]
+ #[inline]
+ fn find_line_end(bytes: &[u8]) -> Option<usize> {
+-    /// How many leading bytes are scanned scalar before delegating to `memchr2`.
+-    const SCALAR_HEAD: usize = 16;
+-
+-    let head_len = bytes.len().min(SCALAR_HEAD);
+-    let head_hit = bytes[..head_len]
+-        .iter()
+-        .position(|byte| matches!(*byte, b'\n' | b'\r'));
+-    if head_len == bytes.len() || head_hit.is_some() {
+-        return head_hit;
+-    }
+-    memchr::memchr2(b'\n', b'\r', &bytes[head_len..]).map(|i| i + head_len)
++    if bytes.len() <= 16 {
++        bytes.iter().position(|byte| matches!(*byte, b'\n' | b'\r'))
++    } else {
++        memchr::memchr2(b'\n', b'\r', bytes)
++    }
+ }
+ 
+ /// Find the index of the first `\n` or `\r` in `bytes`.
+@@ -640,34 +653,22 @@
+         loop {
+             if let Some(data) = this.data.as_mut() {
+                 match this.parser.parse_buf(data) {
+-                    Ok(Some(sse)) => {
+-                        if !data.has_remaining() {
+-                            *this.data = None;
+-                        }
+-                        return Poll::Ready(Some(Ok(sse)));
+-                    }
+-                    Ok(None) => *this.data = None,
++                    Ok(Some(sse)) => return Poll::Ready(Some(Ok(sse))),
++                    Ok(None) => {}
+                     Err(error) => {
+                         *this.data = None;
+                         return Poll::Ready(Some(Err(error)));
+                     }
+                 }
+             }
+-
+             match ready!(this.stream.as_mut().try_poll_next(cx)) {
+                 Some(Err(error)) => return Poll::Ready(Some(Err(Error::Body(Box::new(error))))),
+-                None => return Poll::Ready(None),
+-                Some(Ok(mut data)) => match this.parser.parse_buf(&mut data) {
+-                    Ok(Some(sse)) => {
+-                        if data.has_remaining() {
+-                            *this.data = Some(data);
+-                        }
+-                        return Poll::Ready(Some(Ok(sse)));
+-                    }
+-                    Ok(None) => {}
+-                    Err(error) => return Poll::Ready(Some(Err(error))),
+-                },
+-            }
+-        }
+-    }
+-}
++                None => {
++                    *this.data = None;
++                    return Poll::Ready(None);
++                }
++                Some(Ok(data)) => *this.data = Some(data),
++            }
++        }
++    }
++}
