@@ -1,51 +1,37 @@
-//! Benchmarks adapted from <https://github.com/PizzasBear/sse-rs> (`sse-core/benches/bench.rs`),
-//! trimmed to only compare `sse-stream` (this crate) against `sse-core`.
+//! End-to-end stream benchmarks comparing this crate with `sse-core` across
+//! event shapes and input fragmentation patterns.
 //!
-//! Run with: `cargo bench`
-
-use std::{fmt::Write, hint::black_box, time::Duration};
+//! All comparison workloads produce the same number of logical message events
+//! in both implementations. `retry` is deliberately excluded because
+//! `sse-core` yields it as a standalone event while `sse-stream` attaches it to
+//! the next [`sse_stream::Sse`], which makes a throughput ratio misleading.
+//!
+//! Run the full suite with `cargo bench`, or use `cargo bench -- --quick` while
+//! iterating locally.
 
 use bytes::Bytes;
-use criterion::{criterion_group, criterion_main, Criterion};
+use criterion::{criterion_group, criterion_main, BatchSize, Criterion};
+use sse_core::SseStream as SseCoreStream;
+use std::{hint::black_box, time::Duration};
 use thiserror::Error;
 use tokio_stream::StreamExt;
-
-use sse_core::SseStream as SseCoreStream;
-
-const LARGE_PAYLOAD_SIZE: usize = 40_000;
-const MEDIUM_PAYLOAD_SIZE: usize = 4096;
-const TCP_CHUNK_SIZE: usize = 1460;
-const TINY_CHUNK_SIZE: usize = 10;
-
-fn split_chunks(bytes: &Bytes, chunk_size: usize) -> impl ExactSizeIterator<Item = Bytes> + '_ {
-    (0..bytes.len())
-        .step_by(chunk_size)
-        .map(move |i| bytes.slice(i..bytes.len().min(i + chunk_size)))
-}
-
-fn generate_payload(event_count: usize, payload_size: usize) -> Bytes {
-    let payload = "word".repeat(payload_size / 4);
-    let mut s = String::with_capacity((64 + payload.len()) * event_count);
-    for i in 0..event_count {
-        write!(
-            &mut s,
-            "retry:3000\nid: {i}\nevent: message\ndata: payload data: {payload}\n\n"
-        )
-        .unwrap();
-    }
-    Bytes::from(s)
-}
+mod scenarios;
 
 #[derive(Debug, Clone, Error)]
 #[error("{0}")]
 struct StrError(String);
 
-fn bench_async_cmp(c: &mut Criterion, group_name: &str, payload: Bytes, chunk_size: usize) {
-    let chunks: Vec<Result<_, StrError>> = split_chunks(&payload, chunk_size).map(Ok).collect();
+fn bench_async_cmp(
+    c: &mut Criterion,
+    group_name: &str,
+    chunks: Vec<Bytes>,
+    expected_events: usize,
+) {
+    let payload_len: usize = chunks.iter().map(Bytes::len).sum();
+    let chunks: Vec<Result<_, StrError>> = chunks.into_iter().map(Ok).collect();
 
     let mut group = c.benchmark_group(group_name);
-
-    group.throughput(criterion::Throughput::Bytes(payload.len() as _));
+    group.throughput(criterion::Throughput::Bytes(payload_len as u64));
 
     let runtime = tokio::runtime::Builder::new_current_thread()
         .build()
@@ -53,66 +39,69 @@ fn bench_async_cmp(c: &mut Criterion, group_name: &str, payload: Bytes, chunk_si
 
     group.bench_function("sse_core", |b| {
         b.to_async(runtime.handle()).iter(|| async {
-            let mut sse_stream = SseCoreStream::new(tokio_stream::iter(chunks.iter().cloned()));
+            let mut stream = SseCoreStream::new(tokio_stream::iter(chunks.iter().cloned()));
+            let mut event_count = 0;
 
-            while let Some(Ok(event)) = sse_stream.next().await {
-                black_box(event);
+            while let Some(event) = stream.next().await {
+                black_box(event.expect("sse-core parse error"));
+                event_count += 1;
             }
+
+            assert_eq!(event_count, expected_events);
         })
     });
 
     group.bench_function("sse_stream", |b| {
         b.to_async(runtime.handle()).iter(|| async {
-            let mut sse_stream = sse_stream::SseStream::from_bytes_stream(tokio_stream::iter(
-                chunks.iter().cloned(),
-            ));
+            let mut stream =
+                sse_stream::SseByteStream::new(tokio_stream::iter(chunks.iter().cloned()));
+            let mut event_count = 0;
 
-            while let Some(Ok(event)) = sse_stream.next().await {
-                black_box(event);
+            while let Some(event) = stream.next().await {
+                black_box(event.expect("sse-stream parse error"));
+                event_count += 1;
             }
+
+            assert_eq!(event_count, expected_events);
         })
     });
 
     group.finish();
 }
 
-fn bench_async_parsing_large_events(c: &mut Criterion) {
-    let payload = generate_payload(64, LARGE_PAYLOAD_SIZE);
-
-    let group_name = "async_parsing_large_events_tcp_chunks";
-    bench_async_cmp(c, group_name, payload, TCP_CHUNK_SIZE);
+fn bench_decode(c: &mut Criterion) {
+    for case in scenarios::decode_cases() {
+        bench_async_cmp(c, &case.name, case.chunks, case.events);
+    }
 }
 
-fn bench_async_parsing_small_events(c: &mut Criterion) {
-    let payload = Bytes::from("data: {\"t\":\"a\"}\n\n".repeat(100_000));
-
-    let group_name = "async_parsing_small_events";
-    bench_async_cmp(c, group_name, payload, TCP_CHUNK_SIZE);
-}
-
-fn bench_async_parsing_keepalives(c: &mut Criterion) {
-    let payload = Bytes::from(": keepalive\n\n".repeat(200_000));
-
-    let group_name = "async_parsing_keepalives";
-    bench_async_cmp(c, group_name, payload, TCP_CHUNK_SIZE);
-}
-
-fn bench_async_parsing_medium_events_tiny_chunks(c: &mut Criterion) {
-    let payload = generate_payload(256, MEDIUM_PAYLOAD_SIZE);
-
-    let group_name = "async_parsing_medium_events_tiny_chunks";
-    bench_async_cmp(c, group_name, payload, TINY_CHUNK_SIZE);
+fn bench_encode(c: &mut Criterion) {
+    let mut group = c.benchmark_group("encode");
+    for case in scenarios::encode_cases() {
+        let event = sse_stream::Sse {
+            event: case.event,
+            data: Some(case.data),
+            id: case.id,
+            retry: case.retry,
+        };
+        let wire = Bytes::from(event.clone());
+        group.throughput(criterion::Throughput::Bytes(wire.len() as u64));
+        group.bench_function(case.name, |b| {
+            b.iter_batched(
+                || event.clone(),
+                |event| black_box(Bytes::from(event)),
+                BatchSize::LargeInput,
+            );
+        });
+    }
+    group.finish();
 }
 
 criterion_group! {
     name = benches;
     config = Criterion::default()
-        .sample_size(200)
-        .measurement_time(Duration::from_secs(15));
-    targets =
-        bench_async_parsing_large_events,
-        bench_async_parsing_small_events,
-        bench_async_parsing_keepalives,
-        bench_async_parsing_medium_events_tiny_chunks,
+        .sample_size(100)
+        .measurement_time(Duration::from_secs(10));
+    targets = bench_decode, bench_encode,
 }
 criterion_main!(benches);

@@ -3,6 +3,32 @@ use std::convert::Infallible;
 use futures_util::StreamExt;
 use sse_stream::{Sse, SseBody, SseStream};
 
+#[test]
+fn encoded_fields_keep_their_wire_representation() {
+    let cases = [
+        (Sse::default(), "\n"),
+        (Sse::default().data(""), "data: \n\n"),
+        (Sse::default().event("message"), "event: message\n\n"),
+        (Sse::default().id(""), "id: \n\n"),
+        (Sse::default().retry(0), "retry: 0\n\n"),
+        (
+            Sse::default().retry(u64::MAX),
+            "retry: 18446744073709551615\n\n",
+        ),
+        (
+            Sse::default()
+                .event("message")
+                .data(r#"{"text":"中文🙂\nnext"}"#)
+                .id("abc")
+                .retry(1000),
+            "event: message\ndata: {\"text\":\"中文🙂\\nnext\"}\nid: abc\nretry: 1000\n\n",
+        ),
+    ];
+    for (event, expected) in cases {
+        assert_eq!(bytes::Bytes::from(event).as_ref(), expected.as_bytes());
+    }
+}
+
 #[tokio::test]
 async fn test_encode_body() {
     let sse_sequence = [

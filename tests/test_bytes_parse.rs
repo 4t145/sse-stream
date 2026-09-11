@@ -2,7 +2,7 @@ use bytes::{Buf, Bytes};
 use futures_util::StreamExt;
 use http_body::Frame;
 use http_body_util::{Full, StreamBody};
-use sse_stream::{Sse, SseStream};
+use sse_stream::{Sse, SseByteStream, SseStream};
 
 struct ChainedFrameBody {
     sent: bool,
@@ -58,6 +58,42 @@ async fn test_multi_segment_buf_frame_not_truncated() {
 }
 
 #[tokio::test]
+async fn test_multi_segment_buf_from_byte_stream_not_truncated() {
+    let data = Bytes::from_static(b"data: hel").chain(Bytes::from_static(b"lo\n\n"));
+    let stream = futures_util::stream::iter([Ok::<_, std::convert::Infallible>(data)]);
+    let mut events = SseByteStream::new(stream);
+
+    assert_eq!(events.next().await.unwrap().unwrap(), data_only("hello"));
+    assert!(events.next().await.is_none());
+}
+
+#[tokio::test]
+async fn test_multiple_events_retained_from_one_byte_buffer() {
+    let data = Bytes::from_static(b"data: one\n\ndata: two\n\n");
+    let stream =
+        futures_util::stream::iter([Ok(data), Err(std::io::Error::other("end-of-test error"))]);
+    let mut events = SseByteStream::new(stream);
+
+    assert_eq!(events.next().await.unwrap().unwrap(), data_only("one"));
+    assert_eq!(events.next().await.unwrap().unwrap(), data_only("two"));
+    assert!(matches!(
+        events.next().await,
+        Some(Err(sse_stream::Error::Body(_)))
+    ));
+    assert!(events.next().await.is_none());
+}
+
+#[tokio::test]
+async fn test_multiple_events_retained_from_one_body_frame() {
+    let body = Full::new(Bytes::from_static(b"data: one\n\ndata: two\n\n"));
+    let mut events = SseStream::new(body);
+
+    assert_eq!(events.next().await.unwrap().unwrap(), data_only("one"));
+    assert_eq!(events.next().await.unwrap().unwrap(), data_only("two"));
+    assert!(events.next().await.is_none());
+}
+
+#[tokio::test]
 async fn test_event_split_across_many_immediately_ready_fragments() {
     const SEGMENTS: usize = 10_000;
     let mut fragments: Vec<&'static [u8]> = Vec::with_capacity(SEGMENTS + 2);
@@ -68,6 +104,43 @@ async fn test_event_split_across_many_immediately_ready_fragments() {
     let events = collect_from_chunks(fragments).await;
     assert_eq!(events.len(), 1);
     assert_eq!(events[0].data.as_deref().map(str::len), Some(SEGMENTS));
+}
+
+#[tokio::test]
+async fn test_data_prefix_split_at_every_byte() {
+    let cases: Vec<Vec<&'static [u8]>> = vec![
+        vec![b"d", b"ata: hello\n\n"],
+        vec![b"da", b"ta: hello\n\n"],
+        vec![b"dat", b"a: hello\n\n"],
+        vec![b"data", b": hello\n\n"],
+        vec![b"data:", b" hello\n\n"],
+    ];
+
+    for chunks in cases {
+        assert_eq!(collect_from_chunks(chunks).await, vec![data_only("hello")]);
+    }
+}
+
+#[tokio::test]
+async fn test_split_prefix_ending_at_colon_preserves_space_handling() {
+    for tail in ["hello", " hello", ""] {
+        let input = format!("data: {tail}\n\n");
+        for split in 1..5 {
+            let chunks = [
+                &input.as_bytes()[..split],
+                b"",
+                &input.as_bytes()[split..5],
+                b"",
+                &input.as_bytes()[5..],
+            ];
+            let stream = futures_util::stream::iter(
+                chunks.into_iter().map(Ok::<_, std::convert::Infallible>),
+            );
+            let mut events = SseByteStream::new(stream);
+            assert_eq!(events.next().await.unwrap().unwrap(), data_only(tail));
+            assert!(events.next().await.is_none());
+        }
+    }
 }
 
 #[tokio::test]
@@ -97,9 +170,58 @@ async fn test_crlf_split_across_segments_of_one_frame() {
 }
 
 #[tokio::test]
-async fn test_empty_frame_between_split_crlf() {
+async fn test_empty_chunk_between_split_crlf() {
     let out = collect_from_chunks(vec![b"data: hello\r", b"", b"\ndata: world\n\n"]).await;
     assert_eq!(out, vec![data_only("hello\nworld")]);
+}
+
+#[tokio::test]
+async fn test_event_boundaries_preserve_fields_across_every_split() {
+    let input = Bytes::from_static(
+        concat!(
+            "data: 首条🙂\n\n",
+            "event: update\nid: stream/7\nretry: 1000\n",
+            "data: first\ndata:\ndata: last\n\n",
+            "data: before-id\nid: stream/8\n\n",
+            ": keepalive\r\n\r\n",
+            "data: crlf\r\n\r\n",
+            "data:\n\n",
+            "data: unfinished"
+        )
+        .as_bytes(),
+    );
+    let expected = vec![
+        data_only("首条🙂"),
+        Sse::default()
+            .event("update")
+            .id("stream/7")
+            .retry(1000)
+            .data("first\n\nlast"),
+        Sse::default().data("before-id").id("stream/8"),
+        data_only("crlf"),
+        data_only(""),
+    ];
+
+    for split in 0..=input.len() {
+        for body in [false, true] {
+            let chunks = [input.slice(..split), Bytes::new(), input.slice(split..)];
+            let stream = futures_util::stream::iter(
+                chunks.into_iter().map(Ok::<_, std::convert::Infallible>),
+            );
+            let actual: Vec<Sse> = if body {
+                SseStream::new(StreamBody::new(stream.map(|chunk| chunk.map(Frame::data))))
+                    .map(|event| event.expect("valid event from HTTP body"))
+                    .collect()
+                    .await
+            } else {
+                SseByteStream::new(stream)
+                    .map(|event| event.expect("valid event from byte stream"))
+                    .collect()
+                    .await
+            };
+            assert_eq!(actual, expected, "split={split}, body={body}");
+        }
+    }
 }
 
 async fn collect_from_full(data: &[u8]) -> Vec<Sse> {
@@ -116,10 +238,9 @@ async fn collect_from_chunks(chunks: Vec<&'static [u8]>) -> Vec<Sse> {
     let stream = futures_util::stream::iter(
         chunks
             .into_iter()
-            .map(|c| Ok::<_, std::convert::Infallible>(Frame::data(Bytes::from_static(c)))),
+            .map(|c| Ok::<_, std::convert::Infallible>(Bytes::from_static(c))),
     );
-    let body = StreamBody::new(stream);
-    let mut sse_body = SseStream::new(body);
+    let mut sse_body = SseByteStream::new(stream);
     let mut out = Vec::new();
     while let Some(sse) = sse_body.next().await {
         out.push(sse.expect("parse error"));
@@ -223,6 +344,18 @@ async fn test_multiple_consecutive_cr() {
 async fn test_comment_lines() {
     let out = collect_from_full(b": this is a comment\ndata: hi\n: another\n\n").await;
     assert_eq!(out, vec![data_only("hi")]);
+}
+
+#[tokio::test]
+async fn test_fragmented_comment_lines() {
+    let out = collect_from_chunks(vec![b": ke", b"ep", b"alive\n", b"\n"]).await;
+    assert!(out.is_empty());
+
+    let out = collect_from_chunks(vec![b": comm", b"ent\ndata: before\n\n"]).await;
+    assert_eq!(out, vec![data_only("before")]);
+
+    let out = collect_from_chunks(vec![b"data: after\n: comm", b"ent\n\n"]).await;
+    assert_eq!(out, vec![data_only("after")]);
 }
 
 #[tokio::test]

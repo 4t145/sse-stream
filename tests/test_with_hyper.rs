@@ -14,8 +14,8 @@ async fn test_axum_with_reqwest() -> anyhow::Result<()> {
         )
         .with(tracing_subscriber::fmt::layer())
         .init();
-    sse_server_side::axum::start_serve("127.0.0.1:8080").await?;
-    let tcp_stream = tokio::net::TcpStream::connect("127.0.0.1:8080").await?;
+    let server_addr = sse_server_side::axum::start_serve().await?;
+    let tcp_stream = tokio::net::TcpStream::connect(server_addr).await?;
     let (mut s, c) =
         hyper::client::conn::http1::handshake::<_, String>(TokioIo::new(tcp_stream)).await?;
     tokio::spawn(c.with_upgrades());

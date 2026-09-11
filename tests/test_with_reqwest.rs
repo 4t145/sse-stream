@@ -1,5 +1,5 @@
 use futures_util::StreamExt;
-use sse_stream::SseStream;
+use sse_stream::SseByteStream;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 mod sse_server_side;
@@ -13,10 +13,10 @@ async fn test_axum_with_reqwest() -> anyhow::Result<()> {
         )
         .with(tracing_subscriber::fmt::layer())
         .init();
-    sse_server_side::axum::start_serve("127.0.0.1:8080").await?;
+    let server_addr = sse_server_side::axum::start_serve().await?;
     let client = reqwest::Client::new();
-    let response = client.get("http://127.0.0.1:8080/").send().await?;
-    let mut sse_body = SseStream::from_bytes_stream(response.bytes_stream());
+    let response = client.get(format!("http://{server_addr}/")).send().await?;
+    let mut sse_body = SseByteStream::new(response.bytes_stream());
     let mut receive_count = 0;
     while let Some(Ok(sse)) = sse_body.next().await {
         assert!(sse.data.is_some());
