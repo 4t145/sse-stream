@@ -35,9 +35,11 @@ jobs:
         run: cargo fmt --all -- --check
       - name: Run clippy
         run: cargo clippy --all-targets --all-features -- -D warnings
+      - name: Run tests
+        run: cargo test --all-features
       - name: Cargo login
         run: cargo login ${{ secrets.CRATES_TOKEN }}
-      - name: Publish macros dry run
+      - name: Publish sse-stream dry run
         run: cargo publish -p sse-stream --dry-run
       - name: Publish sse-stream
         if: ${{ startsWith(github.ref, 'refs/tags/release') }}

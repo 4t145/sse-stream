@@ -6,8 +6,10 @@ use axum::{
 use futures_util::{stream::repeat_with, Stream, StreamExt};
 
 use anyhow::Result;
-use std::time::Duration;
+use std::{net::SocketAddr, time::Duration};
 use tokio::io::{self};
+
+const TEST_ADDR_ENV: &str = "SSE_STREAM_TEST_ADDR";
 
 fn router() -> Router {
     Router::new().route("/", get(sse_handler))
@@ -30,10 +32,12 @@ async fn sse_handler() -> Sse<impl Stream<Item = Result<Event, io::Error>>> {
     Sse::new(stream)
 }
 
-pub async fn start_serve(addr: &str) -> io::Result<()> {
-    let listener = tokio::net::TcpListener::bind(addr).await?;
+pub async fn start_serve() -> io::Result<SocketAddr> {
+    let addr = std::env::var(TEST_ADDR_ENV).unwrap_or_else(|_| "127.0.0.1:0".to_owned());
+    let listener = tokio::net::TcpListener::bind(&addr).await?;
+    let local_addr = listener.local_addr()?;
 
-    tracing::debug!("listening on {}", listener.local_addr()?);
+    tracing::debug!(%local_addr, %addr, "listening for integration test");
     tokio::spawn(async move { axum::serve(listener, router()).await });
-    Ok(())
+    Ok(local_addr)
 }
