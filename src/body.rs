@@ -1,20 +1,38 @@
 use std::{
     pin::Pin,
-    task::{ready, Context, Poll},
-    time::Duration,
+    task::{Context, Poll},
 };
 
-use crate::Sse;
+use crate::{BodyError, Sse};
 use bytes::Bytes;
 use futures_util::Stream;
 use http_body::{Body, Frame};
-use std::future::Future;
+mod keep_alive;
+use keep_alive::KeepAliveStream;
+pub use keep_alive::*;
+
+#[cfg(test)]
+mod tests;
 pin_project_lite::pin_project! {
+    /// Encode SSE events as HTTP data frames, optionally sending keep-alives.
+    ///
+    /// Input and encoding errors are returned once as [`BodyError`], then the
+    /// body ends without sending further events or keep-alives.
+    ///
+    /// Data may contain line endings; they are normalized to LF.
     pub struct SseBody<S, T = NeverTimer> {
         #[pin]
         pub event_stream: S,
         #[pin]
-        pub keep_alive: Option<KeepAliveStream<T>>,
+        keep_alive: Option<KeepAliveStream<T>>,
+        finished: bool,
+    }
+}
+
+impl<S, T> SseBody<S, T> {
+    /// Whether a keep-alive timer is configured.
+    pub fn has_keep_alive(&self) -> bool {
+        self.keep_alive.is_some()
     }
 }
 
@@ -26,6 +44,7 @@ where
         Self {
             event_stream: stream,
             keep_alive: None,
+            finished: false,
         }
     }
 }
@@ -39,6 +58,7 @@ where
         Self {
             event_stream: stream,
             keep_alive: Some(KeepAliveStream::new(keep_alive)),
+            finished: false,
         }
     }
 
@@ -46,6 +66,7 @@ where
         SseBody {
             event_stream: self.event_stream,
             keep_alive: Some(KeepAliveStream::new(keep_alive)),
+            finished: self.finished,
         }
     }
 }
@@ -53,16 +74,24 @@ where
 impl<S, E, T> Body for SseBody<S, T>
 where
     S: Stream<Item = Result<Sse, E>>,
+    E: Into<Box<dyn std::error::Error + Send + Sync>>,
     T: Timer,
 {
     type Data = Bytes;
-    type Error = E;
+    type Error = BodyError;
 
+    /// # Errors
+    ///
+    /// Returns [`BodyError::Stream`] for an input error or [`BodyError::Encode`]
+    /// for invalid metadata. Either error ends the body.
     fn poll_frame(
         self: Pin<&mut Self>,
         cx: &mut Context<'_>,
     ) -> Poll<Option<Result<Frame<Self::Data>, Self::Error>>> {
         let this = self.project();
+        if *this.finished {
+            return Poll::Ready(None);
+        }
 
         match this.event_stream.poll_next(cx) {
             Poll::Pending => {
@@ -73,129 +102,30 @@ where
                 }
             }
             Poll::Ready(Some(Ok(event))) => {
+                let bytes = match event.encode() {
+                    Ok(bytes) => bytes,
+                    Err(error) => {
+                        *this.finished = true;
+                        return Poll::Ready(Some(Err(BodyError::Encode(error))));
+                    }
+                };
                 if let Some(keep_alive) = this.keep_alive.as_pin_mut() {
                     keep_alive.reset();
                 }
-                Poll::Ready(Some(Ok(Frame::data(event.into()))))
+                Poll::Ready(Some(Ok(Frame::data(bytes))))
             }
-            Poll::Ready(Some(Err(error))) => Poll::Ready(Some(Err(error))),
-            Poll::Ready(None) => Poll::Ready(None),
-        }
-    }
-}
-
-/// Configure the interval between keep-alive messages, the content
-/// of each message, and the associated stream.
-#[derive(Debug, Clone)]
-#[must_use]
-pub struct KeepAlive {
-    event: Bytes,
-    max_interval: Duration,
-}
-
-impl KeepAlive {
-    /// Create a new `KeepAlive`.
-    pub fn new() -> Self {
-        Self {
-            event: Bytes::from_static(b":\n\n"),
-            max_interval: Duration::from_secs(15),
+            Poll::Ready(Some(Err(error))) => {
+                *this.finished = true;
+                Poll::Ready(Some(Err(BodyError::Stream(error.into()))))
+            }
+            Poll::Ready(None) => {
+                *this.finished = true;
+                Poll::Ready(None)
+            }
         }
     }
 
-    /// Customize the interval between keep-alive messages.
-    ///
-    /// Default is 15 seconds.
-    pub fn interval(mut self, time: Duration) -> Self {
-        self.max_interval = time;
-        self
-    }
-
-    /// Customize the event of the keep-alive message.
-    ///
-    /// Default is an empty comment.
-    ///
-    /// # Panics
-    ///
-    /// Panics if `event` contains any newline or carriage returns, as they are not allowed in SSE
-    /// comments.
-    pub fn event(mut self, event: Sse) -> Self {
-        self.event = event.into();
-        self
-    }
-
-    /// Customize the event of the keep-alive message with a comment
-    pub fn comment(mut self, comment: &str) -> Self {
-        self.event = format!(": {}\n\n", comment).into();
-        self
-    }
-}
-
-impl Default for KeepAlive {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-pub trait Timer: Future<Output = ()> {
-    fn reset(self: Pin<&mut Self>, instant: std::time::Instant);
-    fn from_duration(duration: Duration) -> Self;
-}
-
-pub struct NeverTimer;
-
-impl Future for NeverTimer {
-    type Output = ();
-
-    fn poll(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<Self::Output> {
-        Poll::Pending
-    }
-}
-
-impl Timer for NeverTimer {
-    fn from_duration(_: Duration) -> Self {
-        Self
-    }
-
-    fn reset(self: Pin<&mut Self>, _: std::time::Instant) {
-        // No-op
-    }
-}
-
-pin_project_lite::pin_project! {
-    #[derive(Debug)]
-    struct KeepAliveStream<S> {
-        keep_alive: KeepAlive,
-        #[pin]
-        alive_timer: S,
-    }
-}
-
-impl<S> KeepAliveStream<S>
-where
-    S: Timer,
-{
-    fn new(keep_alive: KeepAlive) -> Self {
-        Self {
-            alive_timer: S::from_duration(keep_alive.max_interval),
-            keep_alive,
-        }
-    }
-
-    fn reset(self: Pin<&mut Self>) {
-        let this = self.project();
-        this.alive_timer
-            .reset(std::time::Instant::now() + this.keep_alive.max_interval);
-    }
-
-    fn poll_event(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Bytes> {
-        let this = self.as_mut().project();
-
-        ready!(this.alive_timer.poll(cx));
-
-        let event = this.keep_alive.event.clone();
-
-        self.reset();
-
-        Poll::Ready(event)
+    fn is_end_stream(&self) -> bool {
+        self.finished
     }
 }

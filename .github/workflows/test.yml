@@ -11,8 +11,24 @@ env:
 
 jobs:
   test:
-    name: Run Tests
+    name: Tests (${{ matrix.name }})
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: default
+            features: ""
+          - name: all
+            features: "--all-features"
+          - name: scalar
+            features: "--no-default-features"
+          - name: strict-scalar
+            features: "--no-default-features --features strict-fields"
+          - name: memchr
+            features: "--no-default-features --features memchr"
+          - name: simdutf8
+            features: "--no-default-features --features simdutf8"
     steps:
       - uses: actions/checkout@v3
 
@@ -30,4 +46,4 @@ jobs:
           restore-keys: ${{ runner.os }}-cargo-
 
       - name: Run tests
-        run: cargo test --all-features
+        run: cargo test ${{ matrix.features }}
