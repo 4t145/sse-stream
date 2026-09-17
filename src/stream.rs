@@ -19,8 +19,8 @@ use parser::Parser;
 pin_project_lite::pin_project! {
     /// An SSE decoder over an HTTP body.
     ///
-    /// Returns raw event blocks, including metadata-only blocks. After an input
-    /// or UTF-8 error it yields that error once and ends. An incomplete final
+    /// Returns raw event blocks, including metadata-only blocks. After a decoding
+    /// error it yields that error once and ends. An incomplete final
     /// block is discarded at EOF. See [`SseByteStream`] for byte stream input.
     pub struct SseStream<B: Body> {
         #[pin]
@@ -33,11 +33,12 @@ pin_project_lite::pin_project! {
     ///
     /// Input buffers may contain multiple events or fragments of an event.
     /// Returns raw blocks, including metadata-only blocks, without inheriting
-    /// ids or retry values across blocks. Unknown fields are ignored; repeated
-    /// metadata fields use the last valid value. UTF-8 in recognized values is
+    /// ids or retry values across blocks. Unknown fields are ignored by default;
+    /// the opt-in `strict-fields` feature rejects them with [`Error::UnknownField`].
+    /// Repeated metadata fields use the last valid value. UTF-8 in recognized values is
     /// validated strictly. Comments are ignored regardless of tracing settings.
     ///
-    /// An input or UTF-8 error is returned once, then the stream ends. EOF
+    /// Any decoding error is returned once, then the stream ends. EOF
     /// discards an incomplete final block. Both endings release parser buffers.
     pub struct SseByteStream<S: TryStream> {
         #[pin]

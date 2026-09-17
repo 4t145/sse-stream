@@ -89,7 +89,8 @@ struct ParsedEvent {
 
 impl Parser {
     /// # Errors
-    /// Returns an error for invalid UTF-8 in a recognized field value.
+    /// Returns an error for invalid UTF-8 in a recognized field value or an
+    /// unknown field when `strict-fields` is enabled.
     pub(super) fn parse_buf(&mut self, data: &mut impl Buf) -> Result<Option<Sse>, Error> {
         while data.has_remaining() {
             let bytes = data.chunk();
@@ -108,7 +109,8 @@ impl Parser {
     /// Without an event, the whole chunk is consumed.
     ///
     /// # Errors
-    /// Returns an error for invalid UTF-8 in a recognized field value.
+    /// Returns an error for invalid UTF-8 in a recognized field value or an
+    /// unknown field when `strict-fields` is enabled.
     fn parse_chunk(&mut self, mut bytes: &[u8]) -> Result<Option<ParsedEvent>, Error> {
         let original_len = bytes.len();
         if self.skip_leading_lf {
@@ -285,7 +287,8 @@ impl Parser {
     }
 
     /// # Errors
-    /// Returns an error for invalid UTF-8 in a recognized field value.
+    /// Returns an error for invalid UTF-8 in a recognized field value or an
+    /// unknown field when `strict-fields` is enabled.
     fn finish_buffered_line(&mut self, line: &[u8]) -> Result<Option<Sse>, Error> {
         if matches!(self.mode, LineMode::Start) {
             return self.parse_line(line);
@@ -304,7 +307,8 @@ impl Parser {
     /// Field rules: <https://html.spec.whatwg.org/multipage/server-sent-events.html#interpreting-an-event-stream>.
     ///
     /// # Errors
-    /// Returns an error for invalid UTF-8 in a recognized field value.
+    /// Returns an error for invalid UTF-8 in a recognized field value or an
+    /// unknown field when `strict-fields` is enabled.
     fn parse_line(&mut self, mut line: &[u8]) -> Result<Option<Sse>, Error> {
         if self.first_line {
             self.first_line = false;
@@ -328,6 +332,7 @@ impl Parser {
                 self.event.id = Some(validate_utf8(value).map_err(Error::Utf8Parse)?.to_owned());
                 self.event.has_fields = true;
             }
+            b"id" => {} // NULL invalidates the value, not the field name.
             b"retry" => {
                 let value = validate_utf8(value).map_err(Error::Utf8Parse)?;
                 if !value.is_empty() && value.bytes().all(|byte| byte.is_ascii_digit()) {
@@ -338,6 +343,9 @@ impl Parser {
                 }
             }
             b"" => trace_comment(value),
+            #[cfg(feature = "strict-fields")]
+            _ => return Err(Error::UnknownField),
+            #[cfg(not(feature = "strict-fields"))]
             _ => {}
         }
         Ok(None)

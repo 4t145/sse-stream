@@ -23,6 +23,8 @@ jobs:
             features: "--all-features"
           - name: scalar
             features: "--no-default-features"
+          - name: strict-scalar
+            features: "--no-default-features --features strict-fields"
           - name: memchr
             features: "--no-default-features --features memchr"
           - name: simdutf8

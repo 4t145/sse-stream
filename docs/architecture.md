@@ -37,6 +37,13 @@ A buffered field's continuation can itself begin with `:` or `data:` without
 starting a new field. An empty line dispatches any collected fields, including
 metadata-only blocks. Field values do not carry over to the next block.
 
+Unknown field names are ignored by default. The opt-in `strict-fields` feature
+returns `Error::UnknownField` for them instead, without UTF-8 validation of the
+unknown name or value. This includes colonless unknown fields, but not comments,
+known colonless fields, invalid retries, or NULL-containing ids. The error uses
+the same terminal lifecycle as other parser errors. Cargo feature unification
+makes this a crate-wide policy for both decoder adapters, not per-instance configuration.
+
 ## Scanning and event completion
 
 Data lines use a dedicated delimiter scan. With `memchr`, long slices use

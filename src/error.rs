@@ -8,6 +8,9 @@ pub enum Error {
     /// Invalid UTF-8 in a recognized field value.
     #[error("utf8 parse error: {0}")]
     Utf8Parse(#[source] std::str::Utf8Error),
+    /// An unknown field encountered with the `strict-fields` feature enabled.
+    #[error("unknown SSE field")]
+    UnknownField,
 }
 
 /// Metadata that cannot be represented in an SSE event block.

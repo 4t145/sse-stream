@@ -8,7 +8,7 @@ An SSE decoder/encoder for HTTP bodies and byte streams.
 
 `Sse` represents a raw event block, including metadata-only blocks. It does not
 inherit ids or retry values across blocks or manage EventSource reconnections.
-Unknown fields are ignored; fields without a colon have empty values; repeated
+Unknown fields are ignored by default; fields without a colon have empty values; repeated
 metadata fields use the last valid value. `retry` accepts only ASCII digits that
 fit in `u64`, and ids containing NULL are ignored.
 
@@ -28,6 +28,15 @@ and [developer documentation](https://github.com/4t145/sse-stream/blob/master/do
 | `memchr` | ✓ | SIMD-accelerated line-end scanning via [`memchr`](https://crates.io/crates/memchr). Disable for a scalar fallback with one less dependency. |
 | `simdutf8` | ✓ | Accelerate UTF-8 validation of long fields. Short fields and validation errors use the standard library; disable to use standard-library validation throughout. |
 | `tracing` | | Log comment lines at DEBUG level via [`tracing`](https://crates.io/crates/tracing). |
+| `strict-fields` | | Reject unknown field names with `Error::UnknownField` instead of ignoring them. |
+
+Enable strict decoding with `sse-stream = { version = "0.3", features = ["strict-fields"] }`.
+Both decoders then return `Error::UnknownField` once and terminate, including for
+unknown colonless fields or unknown fields containing invalid UTF-8. Comments,
+known colonless fields, ignored invalid `retry` values, and ids containing NULL
+keep their usual behavior. Recognized values still require UTF-8 validation
+(except ignored NULL-containing ids). Cargo features are unified: enabling
+`strict-fields` affects all users of the same resolved crate, not just one decoder.
 
 ## Decode
 ```rust

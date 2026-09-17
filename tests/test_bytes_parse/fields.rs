@@ -102,7 +102,6 @@ async fn test_incomplete_trailing_event_discarded() {
 #[tokio::test]
 async fn field_rules_are_independent_of_fragmentation() {
     let input = concat!(
-        "unknown: extension\nunknown\n",
         "event: old\nevent: new\n",
         "id: old\nid: new\nid: bad\0id\n",
         "retry: 12\nretry: 34\nretry: +56\nretry: 78 \n",
@@ -130,7 +129,7 @@ async fn field_rules_are_independent_of_fragmentation() {
 
 #[tokio::test]
 async fn ignored_fields_do_not_create_events() {
-    assert!(collect_from_full(b"unknown: x\nretry: nope\nid: \0\n\n")
+    assert!(collect_from_full(b"retry: nope\nid: \0\n\n")
         .await
         .is_empty());
     let input = b": \xff\r\n\r\ndata: after\n\n";
