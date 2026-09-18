@@ -117,3 +117,9 @@ let stream = futures_util::stream::iter([
 .map(Result::<Sse, Infallible>::Ok);
 let body = SseBody::new(stream);
 ```
+
+## AI assistance
+
+Parts of this project's code were developed with assistance from GPT-6 astra.
+The maintainers remain responsible for reviewing, testing, and maintaining the
+code. This disclosure does not change the project's MIT OR Apache-2.0 licensing.
